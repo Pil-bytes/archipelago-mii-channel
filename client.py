@@ -1,5 +1,7 @@
 import asyncio
+import subprocess
 import sys
+import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Set
 
@@ -18,26 +20,41 @@ from .items import item_table, progressive_item_counts
 from .locations import location_name_to_id
 from .locks import find_violations
 from .mii_reader import (
+    MII_CHANNEL_TITLE_ID,
     Mii,
-    claim_target_preview,
+    dolphin_profile_dir,
+    find_dolphin_exe,
     find_mii_entries_by_name,
     find_rfl_db,
     read_miis,
     read_wii_memory,
     write_mii_field,
     write_mii_field_ram,
+    write_mii_name,
+    write_mii_name_ram,
+    write_synthetic_miis,
 )
 from .targets import (
-    ALL_TARGET_FIELDS,
     BODY_FIELDS,
     CATEGORY_FIELDS,
-    any_mii_matches_body,
-    any_mii_matches_category,
-    any_mii_matches_target_fully,
+    assign_miis_to_targets,
+    body_matches,
+    category_matches,
+    match_score,
+    mii_matches_target_fully,
     target_preview_name,
 )
 
 POLL_INTERVAL_SECONDS = 1.0
+# Name a Mii gets when it completes a target (see _update_progress_names
+# for the "T2 7/11" progress naming every other assigned Mii gets).
+PERFECT_COPY_NAME_PREFIX = "Match "
+# Don't refight the running game over the save file more often than this.
+PREVIEW_WRITE_COOLDOWN_SECONDS = 30.0
+# How long to leave the save file alone after starting Dolphin ourselves:
+# it opens RFL_DB.dat exclusively while booting, and a poll landing in that
+# window pops an error dialog in the game.
+DOLPHIN_BOOT_QUIET_SECONDS = 20.0
 RAM_ENFORCE_INTERVAL_SECONDS = 0.4
 ASM_LOCK_BITMASK_INTERVAL_SECONDS = 0.5
 
@@ -65,12 +82,10 @@ EYE_LOCK_BITMASK_ADDR = 0x803C1400
 EYE_PAGE_COUNT = 4  # eye_type 0-47, 12 per page (DAT_80207118 page table)
 
 # Eyebrow category, same mechanism, same trampoline (chained after the eye
-# block, no interference confirmed live). Page count assumed 12/page like
-# eyes (DAT_80207148 table, same divide-by-0xc pattern in the trampoline) --
-# not independently re-verified, revisit if lock behavior looks off for a
-# specific eyebrow_type range.
+# block, no interference confirmed live). 24 eyebrow types at 12 per page =
+# 2 pages, read off the editor itself (its grid header shows "1/2").
 EYEBROW_LOCK_BITMASK_ADDR = 0x803C1401
-EYEBROW_PAGE_COUNT = 4
+EYEBROW_PAGE_COUNT = 2
 
 # Hair category: hair_type is gated by TWO progressive lines (Progressive
 # Hairstyle: Classic covers types 0-35 = pages 0-2, Wild covers 36-71 =
@@ -184,8 +199,8 @@ class MiiChannelCommandProcessor(CommonClient.ClientCommandProcessor):
             return True
 
         CommonClient.logger.info(
-            f"{len(self.ctx.target_miis)} target Mii(s). Use /targets <n> to see one's recipe, "
-            f"/claim <n> <your Mii's name> to turn one of your real Miis into a permanent preview."
+            f"{len(self.ctx.target_miis)} target Mii(s), all visible in your Mii Plaza. "
+            f"Use /targets <n> to see one's exact recipe."
         )
         existing_names: Set[str] = set()
         if self.ctx.mii_db_path:
@@ -199,56 +214,11 @@ class MiiChannelCommandProcessor(CommonClient.ClientCommandProcessor):
                 if target_location_name(i, category) in self.ctx.checked_names
             )
             perfect_done = target_location_name(i, PERFECT_COPY_CATEGORY) in self.ctx.checked_names
-            preview = " [preview claimed]" if target_preview_name(i) in existing_names else ""
+            preview = "" if target_preview_name(i) in existing_names else " [not in Plaza yet]"
             CommonClient.logger.info(
                 f"Target {i + 1}: {matched}/{len(TARGET_CHECK_CATEGORIES)} categories matched"
                 f"{' -- PERFECT COPY DONE' if perfect_done else ''}{preview}"
             )
-        return True
-
-    def _cmd_claim(self, index: str = "", mii_name: str = "") -> bool:
-        """Permanently turn one of your real, already-created Miis into a
-        preview of a target -- renames it and overwrites its face to match
-        the target, so it shows up in-game (e.g. via Wii Friend) as a
-        reference for what to build. THIS PERMANENTLY REPLACES that Mii's
-        face (only its identity survives) -- pick a Mii you don't mind
-        sacrificing, not one you're actively using for an attempt. Usage:
-        /claim <target number> <exact name of your Mii>"""
-        if not self.ctx.target_miis:
-            CommonClient.logger.info("No targets loaded yet -- connect to a server first.")
-            return True
-        if not index or not mii_name:
-            CommonClient.logger.info("Usage: /claim <target number> <exact name of your Mii>")
-            return True
-        try:
-            i = int(index) - 1
-        except ValueError:
-            CommonClient.logger.info("Usage: /claim <target number> <exact name of your Mii>")
-            return True
-        if not (0 <= i < len(self.ctx.target_miis)):
-            CommonClient.logger.info(f"Target must be between 1 and {len(self.ctx.target_miis)}.")
-            return True
-        if not self.ctx.mii_db_path:
-            self.ctx.mii_db_path = find_rfl_db()
-        if not self.ctx.mii_db_path:
-            CommonClient.logger.info("Could not locate RFL_DB.dat.")
-            return True
-
-        new_name = target_preview_name(i)
-        try:
-            found = claim_target_preview(self.ctx.mii_db_path, mii_name, new_name, self.ctx.target_miis[i])
-        except Exception as e:
-            CommonClient.logger.warning(f"Could not claim '{mii_name}' as a preview: {e!r}")
-            return True
-
-        if not found:
-            CommonClient.logger.info(f"No Mii named '{mii_name}' found -- check the exact spelling.")
-            return True
-
-        CommonClient.logger.info(
-            f"'{mii_name}' is now permanently '{new_name}', matching Target {i + 1}'s face. "
-            f"Restart Dolphin to see it in-game (e.g. via Wii Friend)."
-        )
         return True
 
 
@@ -268,6 +238,9 @@ class MiiChannelContext(CommonClient.CommonContext):
     unlocked_items: Set[str]
     progressive_counts: Dict[str, int]
     seen_item_indices: Set[int]
+    last_preview_write: float
+    dolphin_launched: bool
+    pause_polling_until: float
     dme_missing_warned: bool
     dme_hook_warned: bool
     asm_dme_missing_warned: bool
@@ -280,6 +253,9 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.target_miis = []
         self.checked_names = set()
         self.goaled = False
+        self.last_preview_write = 0.0
+        self.dolphin_launched = False
+        self.pause_polling_until = 0.0
         self.could_not_find_file_logged = False
         self.unlocked_items = set()
         self.progressive_counts = {}
@@ -299,6 +275,8 @@ class MiiChannelContext(CommonClient.CommonContext):
     async def disconnect(self, allow_autoreconnect: bool = False):
         self.checked_names = set()
         self.goaled = False
+        self.last_preview_write = 0.0
+        self.dolphin_launched = False
         await super().disconnect(allow_autoreconnect)
 
     def on_package(self, cmd: str, args: Any) -> None:
@@ -308,8 +286,9 @@ class MiiChannelContext(CommonClient.CommonContext):
             self.target_miis = slot_data.get("target_miis", [])
 
             CommonClient.logger.info(
-                f"{len(self.target_miis)} target Mii(s) loaded. Use /targets to see them, and "
-                f"/claim <n> <your Mii's name> to turn a real Mii into an in-game preview of one."
+                f"{len(self.target_miis)} target Mii(s) loaded. They get written into your Mii "
+                f"Plaza automatically as 'Target 1'...'Target {len(self.target_miis)}' -- "
+                f"just look at them in-game."
             )
 
             Utils.async_start(
@@ -319,6 +298,111 @@ class MiiChannelContext(CommonClient.CommonContext):
             )
 
         super().on_package(cmd, args)
+
+    def _dolphin_is_running(self) -> bool:
+        try:
+            output = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Dolphin.exe", "/NH"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return "Dolphin.exe" in output
+
+    def _launch_dolphin(self) -> None:
+        """Boot Dolphin straight into the Mii Channel once we're connected.
+
+        Deliberately runs AFTER the target previews have been written: the
+        running game owns RFL_DB.dat and writes its boot-time list back over
+        anything added later, so launching it ourselves is what guarantees
+        the previews are on disk first (doing this by hand in the right
+        order was a recurring source of half-loaded target lists)."""
+        if not self.mii_db_path:
+            return
+        if self._dolphin_is_running():
+            CommonClient.logger.info("Dolphin is already running -- leaving it alone.")
+            return
+
+        profile_dir = dolphin_profile_dir(self.mii_db_path)
+        exe = find_dolphin_exe(profile_dir)
+        if not exe:
+            CommonClient.logger.info(
+                "Could not find Dolphin.exe to start automatically -- launch it yourself "
+                "(the target Miis are already written to your save)."
+            )
+            return
+
+        try:
+            subprocess.Popen([exe, "-u", profile_dir, "-n", MII_CHANNEL_TITLE_ID])
+        except OSError as e:
+            CommonClient.logger.warning(f"Could not start Dolphin: {e!r}")
+            return
+
+        # Back off from the save file while the game boots. Dolphin opens it
+        # exclusively on startup, and a poll landing in that window makes the
+        # game fail with "could not be opened -- use by another process",
+        # which is a dialog the player has to answer rather than a silent
+        # retry.
+        self.pause_polling_until = time.monotonic() + DOLPHIN_BOOT_QUIET_SECONDS
+        CommonClient.logger.info("Starting Dolphin on the Mii Channel...")
+
+    def _update_progress_names(self, miis: List[Mii], assignment: Dict[int, Mii]) -> None:
+        """Turn each Mii's name into its own progress readout -- "T2 7/11"
+        meaning "working on Target 2, 7 of the 11 checkable categories
+        already match".
+
+        The name is the only text this mod can put in the Plaza and it holds
+        10 characters, which isn't enough for the player's own name AND both
+        numbers -- and the target number is what makes the score meaningful
+        (a Mii scoring 2 on the target it's assigned to may score 0 on
+        another). Player-chosen names lose out; Miis are identified by their
+        face anyway. Worst case "T20 11/11" is 9 characters.
+
+        Miis with no target assigned are left alone entirely, and ones
+        already renamed by the Perfect Copy reward keep that name -- they're
+        finished, and "Match 3" says more than "11/11" would."""
+        slot_to_target = {mii.slot: target_index for target_index, mii in assignment.items()}
+        total = len(TARGET_CHECK_CATEGORIES)
+
+        for mii in miis:
+            if mii.name.startswith(PERFECT_COPY_NAME_PREFIX):
+                continue
+
+            target_index = slot_to_target.get(mii.slot)
+            if target_index is None:
+                continue
+
+            score = match_score(mii, self.target_miis[target_index])
+            wanted = f"T{target_index + 1} {score}/{total}"
+
+            if wanted != mii.name:
+                try:
+                    write_mii_name(self.mii_db_path, mii.slot, wanted)
+                except Exception as e:
+                    CommonClient.logger.warning(f"Could not update {mii.name}'s progress name: {e!r}")
+                    continue
+                self._rename_in_ram(mii.name, wanted)
+
+    def _rename_in_ram(self, old_name: str, new_name: str) -> None:
+        """Mirror a rename into the running game's own copy of the Mii list.
+
+        Only called when a name actually changed (renames are rare), because
+        this scans all of MEM1+MEM2 -- the same reason poll_ram_enforcement
+        isn't run continuously. Failures are silent by design: the disk
+        rename already happened, so the worst case is the counter only
+        showing after the player re-enters the channel."""
+        if _dme is None:
+            return
+        try:
+            if not _dme.is_hooked():
+                _dme.hook()
+            if not _dme.is_hooked():
+                return
+            for entry_addr, _mii in find_mii_entries_by_name(read_wii_memory(_dme), old_name):
+                write_mii_name_ram(_dme, entry_addr, new_name)
+        except Exception as e:
+            CommonClient.logger.debug(f"Could not mirror rename into Dolphin's memory: {e!r}")
 
     async def poll_mii_database(self) -> None:
         while not self.exit_event.is_set():
@@ -333,6 +417,9 @@ class MiiChannelContext(CommonClient.CommonContext):
                 CommonClient.logger.warning(f"Mii Channel poll error (will retry): {e!r}")
 
     async def _poll_mii_database_once(self) -> None:
+        if time.monotonic() < self.pause_polling_until:
+            return
+
         if True:
             if not self.server or not self.slot:
                 return
@@ -366,14 +453,58 @@ class MiiChannelContext(CommonClient.CommonContext):
                 CommonClient.logger.debug(f"Could not read {self.mii_db_path}: {e!r}")
                 return
 
-            # Target-preview placeholders (claimed via /claim) are permanent
-            # copies of a target's own face -- they must never count toward
-            # milestones, matching, or lock enforcement, or the moment one
-            # is claimed it would trivially "complete" that exact target for
-            # free (and lock enforcement would fight to revert its
-            # deliberately-target-matching fields back to defaults).
+            # Target previews are synthetic Miis we write into RFL_DB.dat so
+            # the player can see every target standing in the Plaza next to
+            # their own Miis. They are permanent copies of a target's own
+            # face, so they must never count toward milestones, matching, or
+            # lock enforcement -- otherwise each one would trivially
+            # "complete" its own target for free, and lock enforcement would
+            # fight to revert its deliberately-target-matching fields.
             preview_names = {target_preview_name(i) for i in range(len(self.target_miis))}
             miis: List[Mii] = [m for m in all_miis if m.name not in preview_names]
+
+            # (Re)write any preview that isn't in the file -- on first
+            # connect, and again if the game ever purges them. This must NOT
+            # wait for the player to own a Mii: write_synthetic_miis falls
+            # back to its embedded template for an empty save, and a fresh
+            # game with nothing in the Plaza is exactly when seeing the
+            # targets matters most.
+            # Rate-limited: while Dolphin is running it owns the file and
+            # periodically writes its own in-memory list back, wiping
+            # previews it didn't load at boot. Rewriting every tick would
+            # just fight it (and churn slots); waiting instead lets the
+            # previews land for good the next time the game starts.
+            missing = preview_names - {m.name for m in all_miis}
+            now = time.monotonic()
+            if missing and now - self.last_preview_write >= PREVIEW_WRITE_COOLDOWN_SECONDS:
+                self.last_preview_write = now
+                try:
+                    written = write_synthetic_miis(
+                        self.mii_db_path,
+                        [(target_preview_name(i), target) for i, target in enumerate(self.target_miis)],
+                    )
+                except OSError as e:
+                    CommonClient.logger.debug(f"Could not write target previews: {e!r}")
+                    written = []
+                if written:
+                    CommonClient.logger.info(
+                        f"Wrote {len(written)} target Mii(s) into your Mii Plaza. "
+                        f"They show up as 'Target 1'...'Target {len(written)}' -- "
+                        f"recreate them to send checks."
+                    )
+                    try:
+                        all_miis = read_miis(self.mii_db_path)
+                        miis = [m for m in all_miis if m.name not in preview_names]
+                    except OSError:
+                        return
+
+            # Start the game once per connection, after the previews above
+            # have had their chance to land (a brand-new save has no Mii to
+            # clone from yet, so this must not wait for them to succeed --
+            # the player needs the game running to create that first Mii).
+            if not self.dolphin_launched:
+                self.dolphin_launched = True
+                self._launch_dolphin()
 
             # Enforcement: revert any locked feature straight in RFL_DB.dat,
             # recomputing the file's CRC16 footer so it stays a fully valid
@@ -381,11 +512,25 @@ class MiiChannelContext(CommonClient.CommonContext):
             # Dolphin save). This is the reliable, guaranteed-to-land layer;
             # poll_ram_enforcement (below) additionally tries to catch it
             # live in Dolphin's RAM for a faster reaction when possible.
+            #
+            # IMPORTANT: this must run and land on disk BEFORE any match
+            # checking below -- confirmed live (2026-09-02) that checking
+            # matches against the same in-memory `miis` snapshot used here,
+            # stale relative to the reverts just written, let a Mii using
+            # entirely locked-and-not-yet-owned features get real, permanent
+            # credit for a category/Perfect-Copy match for one tick, before
+            # the next poll's fresh read caught up and reverted its fields
+            # (and consequently its favorite star) back out from under it --
+            # the check itself, already sent to the server, stayed granted.
+            # `miis` is re-read from disk right after this loop specifically
+            # to close that window.
+            any_reverted = False
             for mii in miis:
-                violations = find_violations(mii, self.unlocked_items)
+                violations = find_violations(mii, self.unlocked_items, self.progressive_counts)
                 for field_name, revert_value in violations.items():
                     try:
                         write_mii_field(self.mii_db_path, mii.slot, field_name, revert_value)
+                        any_reverted = True
                         CommonClient.logger.info(
                             f"Blocked '{mii.name}' from using a locked feature ({field_name}) "
                             f"-- reverted in your save file."
@@ -396,6 +541,47 @@ class MiiChannelContext(CommonClient.CommonContext):
                         # loop (or the whole poll task) for every other Mii
                         # and field still waiting to be reverted.
                         CommonClient.logger.warning(f"Could not revert {mii.name}/{field_name}: {e!r}")
+
+            if any_reverted:
+                try:
+                    # Must re-apply the preview filter: previews are
+                    # byte-perfect copies of their own target, so letting one
+                    # back into `miis` here instantly "completes" that target
+                    # for free -- confirmed live (2026-09-04), the previews
+                    # got renamed to "Match N" and credited as if the player
+                    # had recreated them.
+                    miis = [m for m in read_miis(self.mii_db_path) if m.name not in preview_names]
+                except OSError as e:
+                    CommonClient.logger.debug(f"Could not re-read {self.mii_db_path} after enforcement: {e!r}")
+                    return
+
+            # is_favorite is a SYSTEM-controlled signal now (see Perfect
+            # Copy reward below) -- it must not be player-toggleable, or
+            # it stops meaning anything. Only slots that genuinely,
+            # currently (post-enforcement) match some target in full are
+            # allowed to stay favorited; anyone else's manual star gets
+            # reverted straight back to unfavorited.
+            # One Mii works on one target and vice versa (see
+            # targets.assign_miis_to_targets) -- otherwise a single Mii
+            # credits the same category on every target at once.
+            assignment = assign_miis_to_targets(miis, self.target_miis)
+
+            favorited_slots_allowed: Set[int] = set()
+            for target_index, target in enumerate(self.target_miis):
+                assigned = assignment.get(target_index)
+                if assigned is not None and mii_matches_target_fully(assigned, target):
+                    favorited_slots_allowed.add(assigned.slot)
+
+            for mii in miis:
+                if mii.is_favorite and mii.slot not in favorited_slots_allowed:
+                    try:
+                        write_mii_field(self.mii_db_path, mii.slot, "is_favorite", 0)
+                        CommonClient.logger.info(
+                            f"'{mii.name}' isn't a completed Perfect Copy -- its favorite star "
+                            f"is reserved for that, so it was reverted."
+                        )
+                    except Exception as e:
+                        CommonClient.logger.warning(f"Could not revert {mii.name}'s favorite flag: {e!r}")
 
             newly_checked_ids: List[int] = []
 
@@ -417,24 +603,47 @@ class MiiChannelContext(CommonClient.CommonContext):
             # complete recreation), not accumulated one category at a time
             # possibly across different Miis.
             for target_index, target in enumerate(self.target_miis):
+                assigned = assignment.get(target_index)
+                if assigned is None:
+                    continue
+
                 for category in TARGET_CHECK_CATEGORIES:
                     name = target_location_name(target_index, category)
                     if name in self.checked_names:
                         continue
 
                     matched = (
-                        any_mii_matches_body(miis, target)
+                        body_matches(assigned, target)
                         if category == "Body"
-                        else any_mii_matches_category(miis, target, category)
+                        else category_matches(assigned, target, category)
                     )
                     if matched:
                         self.checked_names.add(name)
                         newly_checked_ids.append(location_name_to_id[name])
 
                 perfect_name = target_location_name(target_index, PERFECT_COPY_CATEGORY)
-                if perfect_name not in self.checked_names and any_mii_matches_target_fully(miis, target):
-                    self.checked_names.add(perfect_name)
-                    newly_checked_ids.append(location_name_to_id[perfect_name])
+                if perfect_name not in self.checked_names:
+                    winning_mii = assigned if mii_matches_target_fully(assigned, target) else None
+                    if winning_mii is not None:
+                        self.checked_names.add(perfect_name)
+                        newly_checked_ids.append(location_name_to_id[perfect_name])
+                        # Permanent, all-in-game visual reward -- no client
+                        # needed to see it: mark the Mii with a star (see
+                        # is_favorite enforcement below, which is what keeps
+                        # this meaningful instead of player-toggleable) and
+                        # rename it to show which target it completed, since
+                        # the star alone doesn't carry a number.
+                        try:
+                            write_mii_name(self.mii_db_path, winning_mii.slot, f"Match {target_index + 1}")
+                            write_mii_field(self.mii_db_path, winning_mii.slot, "is_favorite", 1)
+                            CommonClient.logger.info(
+                                f"'{winning_mii.name}' is a perfect copy of Target {target_index + 1}! "
+                                f"Renamed to 'Match {target_index + 1}' and marked as a favorite."
+                            )
+                        except Exception as e:
+                            CommonClient.logger.warning(f"Could not apply Perfect Copy reward: {e!r}")
+
+            self._update_progress_names(miis, assignment)
 
             # Victory once every check for every target has been completed
             # (every category, body, AND the strict Perfect Copy check).
@@ -514,7 +723,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                     continue
 
                 for entry_addr, live_mii in live_entries:
-                    violations = find_violations(live_mii, self.unlocked_items)
+                    violations = find_violations(live_mii, self.unlocked_items, self.progressive_counts)
                     for field_name, revert_value in violations.items():
                         try:
                             write_mii_field_ram(_dme, entry_addr, field_name, revert_value)
@@ -606,7 +815,16 @@ class MiiChannelContext(CommonClient.CommonContext):
                 | ((((1 << min(wild_count, 3)) - 1) & 0x07) << 3)
             )
 
-            face_shape_bitmask = 0x01 if "Face Shape Tool" in self.unlocked_items else 0x00
+            # One scratch byte still covers the whole r6+0 halfword, which
+            # holds face shape AND the makeup marks, so it opens as soon as
+            # either item has arrived; the save-file layer applies the real
+            # per-item limits a moment later (same coarser-ASM tradeoff as
+            # every other partial unlock here).
+            face_shape_bitmask = (
+                0x01
+                if {"Face Shape Tool", "Makeup Kit"} & self.unlocked_items
+                else 0x00
+            )
             skin_tone_bitmask = 0x01 if "Skin Tone Palette" in self.unlocked_items else 0x00
             glasses_bitmask = 0x01 if "Glasses Case" in self.unlocked_items else 0x00
             mole_bitmask = 0x01 if "Mole Marker" in self.unlocked_items else 0x00

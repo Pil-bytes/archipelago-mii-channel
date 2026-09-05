@@ -5,7 +5,7 @@ from BaseClasses import ItemClassification, Region, Tutorial
 from worlds.AutoWorld import WebWorld, World
 
 from .checks import MILESTONE_CHECKS, TARGET_CHECK_CATEGORIES_ALL, VICTORY_NAME, target_location_name
-from .items import MiiChannelItem, ItemData, item_table, filler_item_names, gating_item_names, progressive_item_counts
+from .items import MiiChannelItem, ItemData, item_table, filler_item_names, progressive_item_counts
 from .locations import MiiChannelLocation, location_name_to_id
 from .options import MiiChannelOptions
 from .targets import generate_targets
@@ -105,9 +105,8 @@ class MiiChannelWorld(World):
     def create_items(self) -> None:
         item_pool: List[MiiChannelItem] = [self.create_item("Golden Wii Remote")]
 
-        for name in gating_item_names:
-            item_pool.append(self.create_item(name))
-
+        # gating_item_names are all in progressive_item_counts now (each
+        # ships in several copies), so adding them here too would duplicate.
         for name, count in progressive_item_counts.items():
             for _ in range(count):
                 item_pool.append(self.create_item(name))

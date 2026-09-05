@@ -16,11 +16,20 @@ from __future__ import annotations
 import os
 import glob
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 ENTRY_START = 0x04
 ENTRY_SIZE = 0x4A
 MAX_SLOTS = 100
+
+# Right after the 100-entry array (0x04 + 100 * 0x4A) sits the slot-usage
+# bitmap, MSB-first: slot N is byte SLOT_BITMAP_OFFSET + N // 8, bit
+# 0x80 >> (N % 8). THIS is what the game treats as "is this slot occupied",
+# not the entry contents -- an entry whose bit is clear is ignored on load
+# AND zeroed out when the game next writes the file back. Confirmed live
+# (2026-09-04): entries written without their bit set were actively purged,
+# which for a long time looked like the game rejecting synthesized Miis.
+SLOT_BITMAP_OFFSET = 0x1CEC
 
 # CRC16 footer: covers exactly the first CRC_OFFSET bytes of the file.
 # Algorithm verified against a real Dolphin RFL_DB.dat: standard CRC-16/CCITT
@@ -67,6 +76,11 @@ def _pack_bits(word: int, total_bits: int, start_from_msb: int, width: int, valu
 # share the exact same word other fields are packed into (e.g. face_shape/skin_color
 # both live in the 2-byte word at entry offset 0x20).
 FIELD_SPECS = {
+    # f0 "options" word (offset 0x00) -- gender/birthday bits live here too
+    # but aren't currently used by anything, so aren't listed; only the two
+    # fields this project actually reads/writes are.
+    "favorite_color": (0x00, 16, 11, 4),
+    "is_favorite": (0x00, 16, 15, 1),
     "face_shape": (0x20, 16, 0, 3),
     "skin_color": (0x20, 16, 3, 3),
     "facial_feature": (0x20, 16, 6, 4),
@@ -429,13 +443,15 @@ def pack_file_record(
     Unlike pack_live_struct_record, this uses the FILE's own word layout
     (FIELD_SPECS directly, no eye/eyebrow or glasses/mustache swap).
 
-    `mii_id`, if given, is used verbatim instead of synthesizing one --
-    pass the ID read back from an existing real (player-created) slot here.
-    The real game's loader silently drops any entry whose synthesized ID it
-    doesn't recognize as one it legitimately generated itself (confirmed
-    empirically -- see project memory), so a synthesized ID only works for
-    entries that already had a real one; there is currently no known way to
-    make the game accept an entirely new synthesized identity."""
+    `mii_id`, if given, is used verbatim instead of synthesizing one.
+
+    WARNING: a record built by this function is REJECTED by the game (it
+    gets zeroed out on the next load) because every field absent from
+    `fields` is left at 0, and 0 is out of valid range for the size and
+    position fields. Use `clone_entry` instead to build a displayable Mii --
+    it inherits valid values for everything it isn't explicitly told to
+    change. This function remains only for `claim_target_preview`, which
+    overwrites a full real entry anyway."""
     buf = bytearray(ENTRY_SIZE)
 
     name = name[:10]
@@ -523,6 +539,189 @@ def claim_target_preview(path: str, current_name: str, new_name: str, fields: Di
     return True
 
 
+MII_CHANNEL_TITLE_ID = "0001000248414341"  # NAND title 00010002/48414341 ("HACA")
+
+# A real, game-created entry, captured from a live RFL_DB.dat and kept here
+# so target previews can be written into a completely empty save.
+# clone_entry only makes sense against a record the game itself produced:
+# every field it isn't told to change has to already hold a valid value
+# (a record built from zeroes gets purged on load -- see clone_entry). Its
+# name and Mii ID are always overwritten, so only the field values and the
+# console ID it carries survive into a preview.
+_TEMPLATE_ENTRY_B64 = (
+    "AAIAVAAxACAANgAvADIANQAAAAAAAEBAibi7CcLG5qsABEJBMb0oogiMCEgUSbiNAIoAiiUFAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAA="
+)
+
+
+def dolphin_profile_dir(rfl_db_path: str) -> str:
+    """The Dolphin user directory an RFL_DB.dat belongs to, i.e. what to
+    pass to Dolphin's -u: <profile>/Wii/shared2/menu/FaceLib/RFL_DB.dat."""
+    return os.path.abspath(os.path.join(os.path.dirname(rfl_db_path), "..", "..", "..", ".."))
+
+
+def find_dolphin_exe(profile_dir: str) -> Optional[str]:
+    """Locate the Dolphin executable that goes with a given user profile.
+
+    Looks beside the profile first (the usual layout here is a
+    Dolphin-x64/ folder next to Dolphin_Archipelago_User/), then in the
+    profile's own launcher script if one was left there, then the usual
+    install locations."""
+    parent = os.path.dirname(profile_dir)
+    candidates = [
+        os.path.join(parent, "Dolphin-x64", "Dolphin.exe"),
+        os.path.join(parent, "Dolphin", "Dolphin.exe"),
+    ]
+    candidates.extend(glob.glob(os.path.join(parent, "Dolphin*", "Dolphin.exe")))
+
+    for bat in glob.glob(os.path.join(profile_dir, "*.bat")):
+        try:
+            with open(bat, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    for token in line.split('"'):
+                        if token.lower().endswith("dolphin.exe"):
+                            candidates.append(token)
+        except OSError:
+            pass
+
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    candidates.append(os.path.join(program_files, "Dolphin", "Dolphin.exe"))
+
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return os.path.abspath(candidate)
+    return None
+
+
+def _slot_bit(slot: int) -> Tuple[int, int]:
+    return SLOT_BITMAP_OFFSET + slot // 8, 0x80 >> (slot % 8)
+
+
+def slot_in_use(data: bytes, slot: int) -> bool:
+    byte_index, mask = _slot_bit(slot)
+    return bool(data[byte_index] & mask)
+
+
+def set_slot_in_use(data: bytearray, slot: int, in_use: bool) -> None:
+    byte_index, mask = _slot_bit(slot)
+    if in_use:
+        data[byte_index] |= mask
+    else:
+        data[byte_index] &= ~mask & 0xFF
+
+
+def make_mii_id(console_id: bytes, seconds_ago: int = 0) -> bytes:
+    """Synthesize a Mii ID the game accepts (confirmed live 2026-09-04).
+
+    Layout: top nibble 0x8 (created-on-a-Wii flag), low 28 bits =
+    (seconds since 2006-01-01) / 4 in LOCAL time -- not UTC, verified by
+    decoding a real Mii's ID back to the exact minute it was created --
+    followed by the 4-byte console ID, which is copied from an existing
+    entry rather than invented.
+
+    `seconds_ago` backdates the timestamp, so a batch of Miis written in the
+    same instant still get distinct IDs."""
+    import datetime
+
+    when = datetime.datetime.now() - datetime.timedelta(seconds=seconds_ago)
+    ticks = int((when - datetime.datetime(2006, 1, 1)).total_seconds()) // 4
+    return (0x80000000 | (ticks & 0x0FFFFFFF)).to_bytes(4, "big") + console_id
+
+
+def clone_entry(source: bytes, name: str, mii_id: bytes, fields: Dict[str, int]) -> bytes:
+    """Build a displayable entry by cloning a real one and overriding only
+    name, ID and the given face fields.
+
+    This is the ONLY way found that makes the game accept a Mii it didn't
+    create itself: packing a record from scratch leaves the size/position
+    fields at 0, which is out of range and gets the entry purged, whereas
+    everything left untouched here inherits already-valid values."""
+    record = bytearray(source)
+
+    for i in range(10):
+        code = ord(name[i]) if i < len(name) else 0
+        record[0x02 + i * 2] = (code >> 8) & 0xFF
+        record[0x02 + i * 2 + 1] = code & 0xFF
+
+    record[MII_ID_OFFSET:MII_ID_OFFSET + MII_ID_SIZE] = mii_id
+
+    if "height" in fields:
+        record[0x16] = fields["height"] & 0xFF
+    if "weight" in fields:
+        record[0x17] = fields["weight"] & 0xFF
+
+    for field_name, (word_offset, word_bits, start_from_msb, width) in FIELD_SPECS.items():
+        if field_name not in fields:
+            continue
+        size = word_bits // 8
+        word = int.from_bytes(record[word_offset:word_offset + size], "big")
+        word = _pack_bits(word, word_bits, start_from_msb, width, fields[field_name])
+        record[word_offset:word_offset + size] = word.to_bytes(size, "big")
+
+    return bytes(record)
+
+
+def write_synthetic_miis(path: str, entries: List[Tuple[str, Dict[str, int]]]) -> List[int]:
+    """Write a batch of fully synthetic Miis (e.g. the AP target previews)
+    into free slots, so they show up in the Plaza next to the player's own.
+
+    Idempotent: any existing Mii whose name matches one of `entries` is
+    freed first, so calling this again just refreshes them. Player Miis are
+    never touched -- only free slots (bitmap bit clear) are used.
+
+    Clones one of the player's own Miis when there is one (so previews carry
+    this console's own ID), and falls back to the entry embedded above when
+    the save is empty -- otherwise a brand-new game would show no targets
+    until the player had created a Mii, which is exactly when they most need
+    to see what to build."""
+    wanted_names = {name for name, _ in entries}
+
+    with open(path, "r+b") as fh:
+        data = bytearray(fh.read())
+
+        template: Optional[bytes] = None
+        for slot in range(MAX_SLOTS):
+            off = ENTRY_START + slot * ENTRY_SIZE
+            if not slot_in_use(data, slot):
+                continue
+            name = _read_name(bytes(data[off + 0x02:off + 0x02 + 20]), 0, 10)
+            # A slot the bitmap calls used but whose entry is blank is a
+            # leaked slot: the game zeroes entries it rejects without ever
+            # clearing their bit, so without this it would stay unusable
+            # forever and previews would drift further down the file on
+            # every rewrite.
+            if name in wanted_names or not name:
+                data[off:off + ENTRY_SIZE] = bytes(ENTRY_SIZE)
+                set_slot_in_use(data, slot, False)
+            elif template is None:
+                template = bytes(data[off:off + ENTRY_SIZE])
+
+        if template is None:
+            import base64
+            template = base64.b64decode(_TEMPLATE_ENTRY_B64)
+
+        console_id = template[MII_ID_OFFSET + 4:MII_ID_OFFSET + MII_ID_SIZE]
+        free_slots = [s for s in range(MAX_SLOTS) if not slot_in_use(data, s)]
+
+        written: List[int] = []
+        for (name, fields), slot in zip(entries, free_slots):
+            record = clone_entry(template, name, make_mii_id(console_id, 60 * (len(written) + 1)), fields)
+            off = ENTRY_START + slot * ENTRY_SIZE
+            data[off:off + ENTRY_SIZE] = record
+            set_slot_in_use(data, slot, True)
+            written.append(slot)
+
+        new_crc = crc16_ccitt(bytes(data[:CRC_OFFSET]))
+        data[CRC_OFFSET:CRC_OFFSET + 2] = new_crc.to_bytes(2, "big")
+
+        fh.seek(0)
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+    return written
+
+
 def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
     """
     Revert a single field on a single Mii slot to `value`, in place, and
@@ -547,6 +746,37 @@ def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
 
         fh.seek(abs_offset)
         fh.write(new_word.to_bytes(word_size, "big"))
+        fh.flush()
+
+        fh.seek(0)
+        full = fh.read(CRC_OFFSET)
+        new_crc = crc16_ccitt(full)
+
+        fh.seek(CRC_OFFSET)
+        fh.write(new_crc.to_bytes(2, "big"))
+
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def write_mii_name(path: str, slot: int, name: str) -> None:
+    """Rename a single Mii slot in place (name bytes only, ID/face fields
+    untouched), recomputing the CRC footer. Used to give a player's own Mii
+    a permanent visual confirmation when it achieves a "Perfect Copy" match
+    (see client.py) -- same safe small-patch pattern as write_mii_field."""
+    name = name[:10]
+    name_bytes = bytearray(20)
+    for i, ch in enumerate(name):
+        code = ord(ch)
+        name_bytes[i * 2] = (code >> 8) & 0xFF
+        name_bytes[i * 2 + 1] = code & 0xFF
+
+    entry_offset = ENTRY_START + slot * ENTRY_SIZE
+    abs_offset = entry_offset + 0x02
+
+    with open(path, "r+b") as fh:
+        fh.seek(abs_offset)
+        fh.write(bytes(name_bytes))
         fh.flush()
 
         fh.seek(0)
@@ -610,6 +840,17 @@ def find_mii_entries_by_name(memory_chunks: List[tuple], name: str) -> List["tup
             if mii is not None and mii.name == name:
                 results.append((base + entry_off, mii))
     return results
+
+
+def write_mii_name_ram(dme, entry_addr: int, name: str) -> None:
+    """Patch a Mii's name in live Dolphin RAM (20 bytes at entry+0x02).
+
+    The game keeps its own copy of the Mii list in memory and never re-reads
+    RFL_DB.dat while running, so a rename on disk alone stays invisible
+    until the channel is re-entered. Patching the live copy too is what
+    makes an in-game progress counter update while the player is playing."""
+    encoded = name[:10].encode("utf-16-be")
+    dme.write_bytes(entry_addr + 0x02, encoded + b"\x00" * (20 - len(encoded)))
 
 
 def write_mii_field_ram(dme, entry_addr: int, field_name: str, value: int) -> None:
