@@ -14,6 +14,8 @@ DOL header (0x100 bytes):
   0xDC: u32 bss size
   0xE0: u32 entry point
 """
+import os
+import tempfile
 import struct
 import time
 
@@ -370,6 +372,184 @@ def do_eyetype_diff(log):
         else:
             addr = MEM2_BASE + (off - MEM1_SIZE)
         log(f"  addr=0x{addr:08X}  eye_type {b_type} -> {a_type}")
+
+
+# Drop cmd.py here, read result.txt. Override with MII_PROBE_DIR.
+SERVE_DIR = os.environ.get("MII_PROBE_DIR") or os.path.join(tempfile.gettempdir(), "mii_probe_serve")
+
+
+def do_serve(log):
+    """Stay hooked and run probe scripts dropped into SERVE_DIR.
+
+    Each launch of this tool costs ~20s of Launcher start-up, which made
+    live RE a crawl. This mode stays up instead: write cmd.py into SERVE_DIR
+    (it gets `dme`, `rd32`, `rd`, `out` in its namespace), and the result
+    appears as result.txt; cmd.py is deleted once it has run."""
+    import os
+    import traceback
+    import dolphin_memory_engine as dme
+
+    os.makedirs(SERVE_DIR, exist_ok=True)
+    cmd_path = os.path.join(SERVE_DIR, "cmd.py")
+    res_path = os.path.join(SERVE_DIR, "result.txt")
+    log(f"serving {SERVE_DIR}")
+    while True:
+        time.sleep(0.1)
+        if not os.path.exists(cmd_path):
+            continue
+        lines = []
+        try:
+            if not dme.is_hooked():
+                dme.hook()
+            src = open(cmd_path, encoding="utf-8").read()
+            ns = {
+                "dme": dme, "time": time, "struct": struct,
+                "rd32": lambda a: struct.unpack(">I", dme.read_bytes(a, 4))[0],
+                "rd": lambda a, n: dme.read_bytes(a, n),
+                "out": lambda *a: lines.append(" ".join(str(x) for x in a)),
+            }
+            exec(compile(src, "cmd.py", "exec"), ns)
+        except Exception:
+            lines.append(traceback.format_exc())
+        try:
+            os.remove(cmd_path)
+        except OSError:
+            pass
+        with open(res_path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        os.replace(res_path + ".tmp", res_path)
+
+
+def do_v9_state(log):
+    """Heartbeat + restore table + eyebrow lock bytes, as deltas."""
+    import dolphin_memory_engine as dme
+    HEARTBEAT, VALUES = 0x803C17F0, 0x803C1500
+    LOCKS = {"eyebrow_type": 0x803C1601, "eyebrow_color": 0x803C160D,
+             "eyebrow_movement": 0x803C160E}
+    NAMES = ["eyebrow_type", "eyebrow_rotation", "eyebrow_color",
+             "eyebrow_size", "eyebrow_vert_pos", "eyebrow_horiz_spacing"]
+
+    dme.hook()
+    time.sleep(0.3)
+    if not dme.is_hooked():
+        log("Not hooked."); return
+
+    def w(a): return struct.unpack(">I", dme.read_bytes(a, 4))[0]
+
+    base = w(HEARTBEAT)
+    time.sleep(2.0)
+    now = w(HEARTBEAT)
+    log(f"heartbeat delta over 2s = {now - base}  (0 = editor closed / trampoline not live)")
+    tbl = dme.read_bytes(VALUES, len(NAMES))
+    log("restore table: " + ", ".join(f"{n}={tbl[i]}" for i, n in enumerate(NAMES)))
+    for k, a in LOCKS.items():
+        log(f"lock {k} @ {a:08X} = {dme.read_bytes(a, 1)[0]}  (0 = locked)")
+    ptr = w(0x803C17F4)
+    log(f"edit struct ptr (published by the trampoline) = {ptr:#010x}")
+    if 0x80000000 <= ptr < 0x81800000 or 0x90000000 <= ptr < 0x94000000:
+        word = w(ptr + 8)
+        log(f"live eyebrow word = {word:#010x}  "
+            f"type={(word >> 27) & 0x1f} rot={(word >> 22) & 0xf} "
+            f"color={(word >> 13) & 0x7} size={(word >> 9) & 0xf} "
+            f"vert={(word >> 4) & 0x1f} spacing={word & 0xf}")
+    else:
+        log("pointer not plausible -- is the editor open?")
+
+
+def do_entry_canary(log):
+    """Does FUN_8003bda4 (the category-apply function the V7/V8 trampoline
+    hooks) run outside live Mii editing?
+
+    V8 black-screened at LAUNCH, not just in the editor, which only makes
+    sense if this function also runs during boot -- where r4/r6 need not
+    mean what they mean during editing. Report a DELTA over a 10s window,
+    never a total: a nonzero count read once says nothing about when."""
+    import dolphin_memory_engine as dme
+    COUNTER, LAST_R4, LAST_R6 = 0x803C1780, 0x803C1784, 0x803C1788
+
+    dme.hook()
+    time.sleep(0.3)
+    if not dme.is_hooked():
+        log("Not hooked -- is Dolphin running with the game loaded?")
+        return
+
+    def rd(a):
+        return struct.unpack(">I", dme.read_bytes(a, 4))[0]
+
+    base = rd(COUNTER)
+    log(f"baseline counter = {base}  (r4={rd(LAST_R4):#010x} r6={rd(LAST_R6):#010x})")
+    for i in range(1, 6):
+        time.sleep(2.0)
+        now = rd(COUNTER)
+        log(f"  +{i*2:2d}s  counter = {now}  delta = {now - base}"
+            f"  r4={rd(LAST_R4):#010x} r6={rd(LAST_R6):#010x}")
+    log("")
+    log("delta 0 while idle in the Plaza => it only runs in the editor,")
+    log("so V8's boot crash is NOT an out-of-editor register-contract problem.")
+
+
+def do_wc24_canary(log):
+    """Find where the game keeps the Mii that was dragged onto the envelope.
+
+    The WC24 list screen shows the same rows whichever Mii is dragged, because
+    nothing tells the mod which one it was -- but the game clearly knows: its
+    confirmation dialog reads "<name> will be sent to ...". The injected row
+    filler now stashes that screen's own struct pointer at 0x803C1BF0, so dump
+    the struct and look for a Mii name in it (UTF-16BE, 10 chars max)."""
+    import dolphin_memory_engine as dme
+    STRUCT_PTR = 0x803C1F00  # moved from 0x1BF0 in BuildWC24RowsV2
+
+    dme.hook()
+    time.sleep(0.3)
+    if not dme.is_hooked():
+        log("Not hooked -- is Dolphin running with the game loaded?")
+        return
+
+    def plausible(addr):
+        # MEM1 and MEM2 both hold game structures -- this screen's lives in
+        # MEM2, which an earlier MEM1-only check wrongly rejected.
+        return 0x80000000 <= addr < 0x81800000 or 0x90000000 <= addr < 0x94000000
+
+    log("Open the Wii Friend view and drag a Mii onto the envelope, then wait.")
+    ptr = 0
+    for _ in range(120):
+        ptr = struct.unpack(">I", dme.read_bytes(STRUCT_PTR, 4))[0]
+        if plausible(ptr):
+            break
+        time.sleep(0.5)
+
+    if not plausible(ptr):
+        log(f"No screen struct captured (read {ptr:#x}). Was the list opened?")
+        return
+
+    log(f"Screen struct at {ptr:#010x}")
+    log("")
+
+    data = dme.read_bytes(ptr, 0x600)
+    log("Readable UTF-16BE text inside the struct:")
+    for off in range(0, len(data) - 4, 2):
+        chunk = data[off:off + 20]
+        try:
+            text = chunk.decode("utf-16-be")
+        except UnicodeDecodeError:
+            continue
+        text = text.split(chr(0))[0]
+        if len(text) >= 3 and all(32 <= ord(c) < 127 for c in text):
+            log(f"  +0x{off:04x}  {text!r}")
+
+    log("")
+    log("Pointer fields that look like they point at a Mii record:")
+    for off in range(0, 0x600, 4):
+        value = struct.unpack(">I", data[off:off + 4])[0]
+        if not plausible(value):
+            continue
+        try:
+            probe = dme.read_bytes(value + 2, 20)
+            text = probe.decode("utf-16-be").split(chr(0))[0]
+        except Exception:
+            continue
+        if len(text) >= 2 and all(32 <= ord(c) < 127 for c in text):
+            log(f"  +0x{off:04x} -> {value:#010x}  name={text!r}")
 
 
 def do_phase2_canaries(log):
@@ -1205,7 +1385,7 @@ def do_dump_gate_bytes(log):
         log(f"0x{0x80017720+i:08X}: {word:08X}")
 
 
-MODE = "read_scenecreate_capture"
+MODE = "serve"
 
 _TRAMPOLINE_WORDS = [
     # DIAGNOSTIC BUILD: unconditionally forces eye_type to 47 (0x2F) instead
@@ -1299,7 +1479,15 @@ def main(*args) -> None:
             fh.write("\n".join(lines))
 
     try:
-        if MODE == "dol_convert":
+        if MODE == "serve":
+            do_serve(log)
+        elif MODE == "v9_state":
+            do_v9_state(log)
+        elif MODE == "entry_canary":
+            do_entry_canary(log)
+        elif MODE == "wc24_canary":
+            do_wc24_canary(log)
+        elif MODE == "dol_convert":
             do_dol_convert(log)
         elif MODE == "snapshot_a":
             do_snapshot(log, DUMP_A)

@@ -32,7 +32,7 @@ everything already unlocked, not by guessing.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .mii_reader import Mii
 
@@ -333,3 +333,111 @@ def find_violations(
         violations["hair_color"] = HAIR_COLOR_DEFAULT
 
     return violations
+
+
+_FIELD_ITEM: Dict[str, str] = {
+    field: item for item, fields in ITEM_FIELD_LOCKS.items() for field in fields
+}
+
+# Editor page of every type id (display index // 12), read from the game's
+# own page tables (main.dol 0x80207118 eye, 0x80207148 eyebrow, 0x802070d0
+# hair, 0x80207170 mouth). The ASM layer unlocks PAGES in order -- copy n of a
+# progressive item opens page n-1 -- and the mapping from type id to page is
+# not linear, so the file layer's value-order check alone under-reports.
+EDITOR_PAGE: Dict[str, List[int]] = {
+    "eye_type": [0, 0, 0, 3, 0, 2, 2, 3, 0, 1, 3, 1, 1, 2, 3, 0, 0, 0, 2, 1, 0, 1, 3, 1,
+                 2, 1, 0, 0, 2, 3, 2, 2, 1, 1, 1, 1, 2, 2, 3, 0, 1, 2, 3, 3, 3, 3, 2, 3],
+    "eyebrow_type": [0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1],
+    "mouth_type": [0, 0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0],
+    "hair_type": [4, 3, 5, 4, 3, 3, 4, 3, 3, 5, 4, 4, 3, 3, 4, 5, 5, 4, 5, 3, 4, 4, 4, 2,
+                  5, 3, 3, 3, 5, 5, 2, 0, 1, 0, 2, 4, 2, 1, 2, 0, 0, 2, 2, 2, 0, 0, 5, 1,
+                  1, 0, 1, 0, 1, 5, 2, 1, 0, 2, 1, 0, 1, 5, 1, 4, 1, 2, 1, 2, 0, 3, 0, 5],
+}
+_PAGE_ITEM = {"eye_type": "Progressive Eye Editor", "eyebrow_type": "Progressive Eyebrow Editor",
+              "mouth_type": "Progressive Mouth Editor"}
+
+
+def _editor_requirement(field_name: str, value: int) -> Optional[Tuple[str, int]]:
+    """(item, copies) the in-editor ASM layer needs to let `value` be picked.
+    Hair pages 0-2 belong to the Classic pack, 3-5 to Wild -- by PAGE, which
+    for some types disagrees with the file layer's split by type id
+    (HAIRSTYLE_CLASSIC_MAX); both are reported, the player needs both."""
+    pages = EDITOR_PAGE.get(field_name)
+    if pages is None or not 0 <= value < len(pages):
+        return None
+    page = pages[value]
+    if field_name == "hair_type":
+        if value == HAIRSTYLE_DEFAULT_TYPE:
+            return None
+        return (HAIRSTYLE_CLASSIC_ITEM if page < 3 else HAIRSTYLE_WILD_ITEM), page % 3 + 1
+    if value == ITEM_FIELD_LOCKS[_PAGE_ITEM[field_name]][field_name]:
+        return None   # the default is always available
+    return _PAGE_ITEM[field_name], page + 1
+
+
+def _gating_item(field_name: str, value: int) -> Optional[str]:
+    """The item that decides whether `field_name` may hold `value`."""
+    if field_name == "hair_type":
+        if value == HAIRSTYLE_DEFAULT_TYPE:
+            return None
+        return HAIRSTYLE_WILD_ITEM if value > HAIRSTYLE_CLASSIC_MAX else HAIRSTYLE_CLASSIC_ITEM
+    if field_name == "hair_color":
+        return HAIR_COLOR_ITEM
+    if field_name == "hair_part_reversed":
+        return HAIRSTYLE_CLASSIC_ITEM if value else None
+    return _FIELD_ITEM.get(field_name)
+
+
+def requirements_for(
+    mii: Mii,
+    wanted: Dict[str, int],
+    unlocked_items: set,
+    item_counts: Dict[str, int],
+) -> List[Tuple[str, int, int]]:
+    """What still stands between `mii` and holding `wanted` (field -> value).
+
+    Returns [(item, copies owned, copies needed)] for every item that blocks
+    one of those values right now -- the envelope screen shows this when a
+    locked characteristic is clicked. find_violations stays the single source
+    of truth: each field is tried on a copy of the Mii holding the wanted
+    value, with the gating item's count raised one copy at a time until the
+    violation disappears."""
+    import dataclasses
+
+    probe = dataclasses.replace(mii, **{
+        f: (bool(v) if isinstance(getattr(mii, f), bool) else v) for f, v in wanted.items()
+    })
+    needs: Dict[str, Tuple[int, int]] = {}
+    for field_name, value in wanted.items():
+        item = _gating_item(field_name, int(value))
+        if item is None:
+            continue
+        membership = item in (HAIRSTYLE_CLASSIC_ITEM, HAIRSTYLE_WILD_ITEM)
+        total = 1 if membership else item_copies(item)
+        owned = (1 if item in unlocked_items else 0) if membership else \
+            item_counts.get(item, total if item in unlocked_items else 0)
+        needed = total
+        for n in range(0, total + 1):
+            counts = dict(item_counts)
+            unlocked = set(unlocked_items)
+            if membership:
+                (unlocked.add if n else unlocked.discard)(item)
+            else:
+                counts[item] = n
+                (unlocked.add if n else unlocked.discard)(item)
+            if field_name not in find_violations(probe, unlocked, counts):
+                needed = n
+                break
+        if needed > owned:
+            prev = needs.get(item, (owned, 0))
+            needs[item] = (owned, max(prev[1], needed))
+
+        # The editor's own page gating (ASM layer), which can ask for more.
+        editor = _editor_requirement(field_name, int(value))
+        if editor is not None:
+            e_item, e_need = editor
+            e_owned = item_counts.get(e_item, 0)
+            if e_need > e_owned:
+                prev = needs.get(e_item, (e_owned, 0))
+                needs[e_item] = (e_owned, max(prev[1], e_need))
+    return [(item, have, need) for item, (have, need) in needs.items()]

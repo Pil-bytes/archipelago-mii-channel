@@ -123,10 +123,12 @@ FIELD_SPECS = {
 
 # The in-game live Mii-editor struct (what the actual running game reads
 # for rendering/selection, distinct from this file's on-disk RFL_DB.dat
-# layout above) packs the SAME per-field (start_from_msb, width) bit
-# layout into each word -- confirmed independently twice this project, via
-# a live memory diff for eye_type and via FUN_8004043c's clamp-function
-# decompile for every other field -- but at DIFFERENT word offsets: eye and
+# layout above) was long believed to pack the SAME per-field bit layout into
+# each word. Measured live on 2026-09-11 that is FALSE for the eye and
+# eyebrow words, which are reordered (see BuildTrampolineV13.java for the
+# measured layouts of every word); the halfword categories do match. So
+# pack_live_struct_record below is wrong for eyes/eyebrows -- it is only
+# used by the abandoned Phase 2 panel code. The word offsets are right: eye and
 # eyebrow are swapped relative to the file layout, and so are glasses and
 # mustache/beard. Everything else keeps the same relative order, just
 # shifted down by the file's 0x20 record-header size. Maps this file's
@@ -241,6 +243,9 @@ class Mii:
     mole_size: int
     mole_vert_pos: int
     mole_horiz_pos: int
+    # 8-byte Mii id (file offset 0x18): how the running game refers to a Mii,
+    # e.g. in the object that mirrors the Mii currently picked up.
+    mii_id: bytes = b""
 
 
 def _parse_entry(b: bytes, slot: int, off: int) -> Optional[Mii]:
@@ -343,7 +348,7 @@ def _parse_entry(b: bytes, slot: int, off: int) -> Optional[Mii]:
         beard_type=beard_type, facial_hair_color=facial_hair_color,
         mustache_size=mustache_size, mustache_vert_pos=mustache_vert_pos,
         mole_enabled=mole_enabled, mole_size=mole_size, mole_vert_pos=mole_vert_pos,
-        mole_horiz_pos=mole_horiz_pos,
+        mole_horiz_pos=mole_horiz_pos, mii_id=bytes(b[off + 0x18:off + 0x20]),
     )
 
 
@@ -722,6 +727,190 @@ def write_synthetic_miis(path: str, entries: List[Tuple[str, Dict[str, int]]]) -
     return written
 
 
+# --- Mii Parade (RFL's "hidden database") ------------------------------------
+#
+# Layout read straight off the game's own code (Ghidra, 2026-09-11):
+#   FUN_80147dd4 (format)      'RNHD' at 0x1D00, u16 head at 0x1D04, u16 tail at
+#                              0x1D06 (0xFFFF = empty), then 10000 list entries.
+#   FUN_8013ca98 (append)      entry = 8-byte Mii id, u16 next, u16 prev; 15-bit
+#                              indices, 0x7FFF = none; bit 15 of `next` = the
+#                              Mii's gender bit (0x4000 of its first u16).
+#   FUN_8013c55c (remove)      standard doubly-linked unlink, fixing head/tail.
+#   FUN_8013ea44 (Plaza->Parade record)  first 0x36 bytes of the Plaza record,
+#                              rest zero, birthday bits cleared (& 0xC01F) --
+#                              which is why a Mii sent to the Parade loses its
+#                              birthday and creator.
+#   FUN_8013ccb8 (send)        the 0x40-byte record goes to 0x1F1E0 + index*0x40,
+#                              outside the CRC; the list itself is inside it.
+#   FUN_80146994 (Parade view) does NOT walk the list: it scans all 10000 entries
+#                              for a non-null id, shuffles them, and loads each
+#                              record, rejecting one whose id doesn't match.
+# The 2026-09-05 attempt read the entries at 0x1D04 instead of 0x1D08 -- four
+# bytes off -- which is why a hand-built list showed one Mii or thousands.
+PARADE_HEAD_OFFSET = 0x1D04
+PARADE_TAIL_OFFSET = 0x1D06
+PARADE_LIST_OFFSET = 0x1D08
+PARADE_LIST_STRIDE = 12
+PARADE_CAPACITY = 10000
+PARADE_NONE = 0x7FFF
+PARADE_DATA_OFFSET = 0x1F1E0
+PARADE_RECORD_SIZE = 0x40
+PARADE_COPIED_BYTES = 0x36
+
+
+@dataclass
+class ParadeEntry:
+    index: int
+    mii_id: bytes
+    next: int
+    prev: int
+    gender_flag: int
+    record: bytes
+
+    @property
+    def name(self) -> str:
+        return _read_name(self.record, 0x02, 10)
+
+
+def plaza_to_parade_record(record: bytes) -> bytes:
+    """What the game itself stores when a Mii is sent to the Parade."""
+    out = bytearray(PARADE_RECORD_SIZE)
+    out[:PARADE_COPIED_BYTES] = record[:PARADE_COPIED_BYTES]
+    first = int.from_bytes(out[0:2], "big") & 0xC01F
+    out[0:2] = first.to_bytes(2, "big")
+    return bytes(out)
+
+
+def read_parade(path: str) -> Tuple[int, int, List[ParadeEntry]]:
+    """(head, tail, every entry with a non-null id), in index order."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    head = _be16(data, PARADE_HEAD_OFFSET)
+    tail = _be16(data, PARADE_TAIL_OFFSET)
+    entries: List[ParadeEntry] = []
+    for i in range(PARADE_CAPACITY):
+        off = PARADE_LIST_OFFSET + i * PARADE_LIST_STRIDE
+        mii_id = data[off:off + 8]
+        if mii_id == bytes(8):
+            continue
+        nxt = _be16(data, off + 8)
+        prv = _be16(data, off + 10)
+        rec_off = PARADE_DATA_OFFSET + i * PARADE_RECORD_SIZE
+        entries.append(ParadeEntry(i, mii_id, nxt & 0x7FFF, prv & 0x7FFF, nxt >> 15,
+                                   data[rec_off:rec_off + PARADE_RECORD_SIZE]))
+    return head, tail, entries
+
+
+def write_parade_miis(path: str, entries: List[Tuple[str, Dict[str, int]]],
+                      id_offset_seconds: int = 3600) -> List[int]:
+    """Put `entries` (name, face fields) in the Mii Parade, replacing any
+    earlier Parade Mii with the same name and keeping every other one.
+
+    The list is rebuilt in canonical form -- kept Miis first, then the new
+    ones, at indices 0..K-1, chained next/prev, head 0, tail K-1 -- rather
+    than patched in place: the game keys Parade Miis by id, never by index,
+    so renumbering is harmless, and it repairs whatever state earlier
+    experiments left behind (this file had head 0x7FFF, i.e. no valid head).
+
+    IDs are backdated by `id_offset_seconds` so they never collide with the
+    Plaza previews written in the same instant (same console id): two Miis
+    sharing an id would be the same Mii to the game.
+
+    Must only run while Dolphin is closed -- the running game owns the file
+    and writes its in-memory copy of this region back."""
+    import base64
+
+    wanted = {name for name, _ in entries}
+    with open(path, "r+b") as fh:
+        data = bytearray(fh.read())
+
+        _, _, current = read_parade(path)
+        kept = [e for e in current if e.name not in wanted]
+
+        template: Optional[bytes] = None
+        for slot in range(MAX_SLOTS):
+            off = ENTRY_START + slot * ENTRY_SIZE
+            if slot_in_use(data, slot) and _read_name(bytes(data[off + 2:off + 22]), 0, 10):
+                template = bytes(data[off:off + ENTRY_SIZE])
+                break
+        if template is None:
+            template = base64.b64decode(_TEMPLATE_ENTRY_B64)
+        console_id = template[MII_ID_OFFSET + 4:MII_ID_OFFSET + MII_ID_SIZE]
+
+        new_records: List[bytes] = []
+        for k, (name, fields) in enumerate(entries):
+            plaza = clone_entry(template, name,
+                                make_mii_id(console_id, id_offset_seconds + 60 * (k + 1)), fields)
+            new_records.append(plaza_to_parade_record(plaza))
+
+        final = [e.record for e in kept] + new_records
+        if len(final) > PARADE_CAPACITY:
+            raise ValueError("Parade full")
+
+        # Clear the whole list and every record slot previously in use.
+        for i in range(PARADE_CAPACITY):
+            off = PARADE_LIST_OFFSET + i * PARADE_LIST_STRIDE
+            data[off:off + 8] = bytes(8)
+            data[off + 8:off + 10] = PARADE_NONE.to_bytes(2, "big")
+            data[off + 10:off + 12] = PARADE_NONE.to_bytes(2, "big")
+        for e in current:
+            rec_off = PARADE_DATA_OFFSET + e.index * PARADE_RECORD_SIZE
+            data[rec_off:rec_off + PARADE_RECORD_SIZE] = bytes(PARADE_RECORD_SIZE)
+
+        count = len(final)
+        for i, record in enumerate(final):
+            gender = (int.from_bytes(record[0:2], "big") >> 14) & 1
+            nxt = i + 1 if i + 1 < count else PARADE_NONE
+            prv = i - 1 if i > 0 else PARADE_NONE
+            off = PARADE_LIST_OFFSET + i * PARADE_LIST_STRIDE
+            data[off:off + 8] = record[MII_ID_OFFSET:MII_ID_OFFSET + MII_ID_SIZE]
+            data[off + 8:off + 10] = ((gender << 15) | nxt).to_bytes(2, "big")
+            data[off + 10:off + 12] = prv.to_bytes(2, "big")
+            rec_off = PARADE_DATA_OFFSET + i * PARADE_RECORD_SIZE
+            data[rec_off:rec_off + PARADE_RECORD_SIZE] = record
+
+        head = 0 if count else 0xFFFF
+        tail = count - 1 if count else 0xFFFF
+        data[PARADE_HEAD_OFFSET:PARADE_HEAD_OFFSET + 2] = head.to_bytes(2, "big")
+        data[PARADE_TAIL_OFFSET:PARADE_TAIL_OFFSET + 2] = tail.to_bytes(2, "big")
+
+        new_crc = crc16_ccitt(bytes(data[:CRC_OFFSET]))
+        data[CRC_OFFSET:CRC_OFFSET + 2] = new_crc.to_bytes(2, "big")
+
+        fh.seek(0)
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+    return list(range(len(kept), count))
+
+
+def remove_miis_by_name(path: str, names) -> int:
+    """Delete every Plaza Mii whose name is in `names` (entry zeroed, slot
+    bit cleared -- the bitmap is what the game trusts -- CRC rewritten).
+    Returns how many were removed. Dolphin must be closed."""
+    wanted = set(names)
+    with open(path, "r+b") as fh:
+        data = bytearray(fh.read())
+        removed = 0
+        for slot in range(MAX_SLOTS):
+            off = ENTRY_START + slot * ENTRY_SIZE
+            if not slot_in_use(data, slot):
+                continue
+            if _read_name(bytes(data[off + 0x02:off + 0x02 + 20]), 0, 10) in wanted:
+                data[off:off + ENTRY_SIZE] = bytes(ENTRY_SIZE)
+                set_slot_in_use(data, slot, False)
+                removed += 1
+        if removed:
+            new_crc = crc16_ccitt(bytes(data[:CRC_OFFSET]))
+            data[CRC_OFFSET:CRC_OFFSET + 2] = new_crc.to_bytes(2, "big")
+            fh.seek(0)
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+    return removed
+
+
 def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
     """
     Revert a single field on a single Mii slot to `value`, in place, and
@@ -840,6 +1029,39 @@ def find_mii_entries_by_name(memory_chunks: List[tuple], name: str) -> List["tup
             if mii is not None and mii.name == name:
                 results.append((base + entry_off, mii))
     return results
+
+
+CREATOR_OFFSET = 0x36
+CREATOR_SIZE = 20  # 10 UTF-16 characters, same as the name
+
+
+def write_mii_creator(path: str, slot: int, text: str) -> None:
+    """Overwrite a Mii's creator name (10 characters) and fix the CRC.
+
+    The Mii Channel shows this line right under the name when a Mii is
+    clicked in the Plaza -- confirmed live -- which makes it a second
+    readable text field. The mod puts its progress readout here rather than
+    in the name, so the player keeps the name they chose."""
+    with open(path, "r+b") as fh:
+        data = bytearray(fh.read())
+        off = ENTRY_START + slot * ENTRY_SIZE + CREATOR_OFFSET
+        encoded = text[:10].encode("utf-16-be")
+        data[off:off + CREATOR_SIZE] = encoded + b"\x00" * (CREATOR_SIZE - len(encoded))
+
+        new_crc = crc16_ccitt(bytes(data[:CRC_OFFSET]))
+        data[CRC_OFFSET:CRC_OFFSET + 2] = new_crc.to_bytes(2, "big")
+
+        fh.seek(0)
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def write_mii_creator_ram(dme, entry_addr: int, text: str) -> None:
+    """Same as write_mii_creator but against the running game's own copy,
+    so the bubble updates without leaving the channel."""
+    encoded = text[:10].encode("utf-16-be")
+    dme.write_bytes(entry_addr + CREATOR_OFFSET, encoded + b"\x00" * (CREATOR_SIZE - len(encoded)))
 
 
 def write_mii_name_ram(dme, entry_addr: int, name: str) -> None:
