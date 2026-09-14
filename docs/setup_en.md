@@ -1,4 +1,4 @@
-# Mii Channel Auto Setup Guide (v0.3)
+# Mii Channel Auto Setup Guide (v0.4)
 
 ## What this is
 
@@ -41,6 +41,8 @@ as soon as a saved Mii matches. No clicking required.
 
 ## How to play
 
+- **In-game help**: the Plaza's "?" button explains all of this while the
+  client is running.
 - **See a target**: Parade button (top right of the Plaza). The targets are
   called "Target 1", "Target 2"...
 - **Know what is left**: click the Wii Friend envelope, then grab one of your
@@ -74,6 +76,21 @@ as soon as a saved Mii matches. No clicking required.
   shows exactly which).
 - **Goal** ("Become a Mii Master"): complete every check of every target.
 
+## Traps
+
+`trap_percentage` (default 20) turns that share of the filler items into
+traps; each trap has its own weight option (0 disables it):
+
+- **Tool Jam**: one tool you already unlocked locks again for 60 seconds.
+- **Paint Spill**: a random colour (hair, eyes, eyebrows, mouth, glasses,
+  facial hair or favourite colour) lands on one of your Miis.
+- **Growth Spurt**: one of your Miis gets a random height and weight.
+- **Quit Without Saving** and **Big Head**: planned; their weight defaults
+  to 0 because the client cannot play them yet.
+
+Traps never touch the targets, and each one plays once: restarting the
+client does not replay traps you already received.
+
 ## Client commands
 
 - `/targets` lists the targets and your progress; `/targets 3` prints target
@@ -87,11 +104,12 @@ as soon as a saved Mii matches. No clicking required.
 
 - **Nothing is checked**: the Mii Channel only writes `RFL_DB.dat` when it
   saves -- leave the editor with "Save and quit".
-- **Envelope list empty or rows do nothing**: the Gecko codes aren't loaded.
-  Check they are enabled and restart the channel. If you add codes of your
-  own, keep the total small: Dolphin silently drops Gecko codes past ~3 KB.
+- **Envelope list empty, rows do nothing, "?" shows the game's controls**:
+  the Gecko codes aren't loaded, or the client isn't running. Check the
+  codes are enabled and restart the channel. If you add codes of your own,
+  keep the total small: Dolphin silently drops Gecko codes past ~3 KB.
 - **Locks don't react after restarting Dolphin**: the client reconnects to
   the new Dolphin by itself within a few seconds; if not, restart the client.
 - **Back up `RFL_DB.dat`** before a long session. The client edits it (target
-  Miis in the Parade, reverting locked features) with correct checksums, but a
-  backup costs nothing.
+  Miis in the Parade, reverting locked features, traps) with correct
+  checksums, but a backup costs nothing.
