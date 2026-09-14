@@ -109,3 +109,19 @@ item_table["Golden Wii Remote"] = ItemData(_next_id, ItemClassification.useful)
 _next_id += 1
 
 item_table["Victory"] = ItemData(_next_id, ItemClassification.progression)
+_next_id += 1
+
+# Traps (2026-09-15). Their ids come after every existing item, so no id an
+# older seed relies on moves. What each one does lives in traps.py; how
+# many end up in the pool is the trap_percentage option plus one weight per
+# trap (options.py).
+TRAP_ITEMS = [
+    "Quit Without Saving Trap",   # the editor closes and throws the edit away
+    "Tool Jam Trap",              # an unlocked tool locks again for a while
+    "Paint Spill Trap",           # a random colour on one of your Miis
+    "Growth Spurt Trap",          # random height and weight on one of your Miis
+    "Big Head Trap",              # every head balloons for a while
+]
+for name in TRAP_ITEMS:
+    item_table[name] = ItemData(_next_id, ItemClassification.trap)
+    _next_id += 1

@@ -19,6 +19,17 @@ from .checks import (
 from .items import item_table, progressive_item_counts
 from .locations import location_name_to_id
 from .locks import find_violations, requirements_for
+from .items import TRAP_ITEMS
+from .traps import (JAM_TARGETS, TOOL_JAM_SECONDS, TrapState, growth_spurt, paint_spill,
+                    pick_victim, traps_done_key)
+from .help_text import HELP_TEXT, HELP_TITLE
+
+# Plaza "?" window text (gecko dialog block, BuildWC24DialogHelp): UTF-16BE,
+# empty = the game keeps its own text.
+HELP_TEXT_ADDR = 0x803C5600
+HELP_TEXT_BYTES = 0x400
+HELP_TITLE_ADDR = 0x803C5A00
+HELP_TITLE_BYTES = 0x40
 from .mii_reader import (
     MII_CHANNEL_TITLE_ID,
     Mii,
@@ -429,6 +440,7 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.unlocked_items = set()
         self.progressive_counts = {}
         self.seen_item_indices = set()
+        self.traps = TrapState()
         self.dme_missing_warned = False
         self.dme_hook_warned = False
         self.asm_dme_missing_warned = False
@@ -529,7 +541,7 @@ class MiiChannelContext(CommonClient.CommonContext):
             hints_key = f"_read_hints_{self.team}_{self.slot}"
             Utils.async_start(self.send_msgs([
                 {"cmd": "LocationScouts", "locations": sorted(self.server_locations), "create_as_hint": 0},
-                {"cmd": "Get", "keys": [hints_key]},
+                {"cmd": "Get", "keys": [hints_key, traps_done_key(self.team, self.slot)]},
                 {"cmd": "SetNotify", "keys": [hints_key]},
             ]))
 
@@ -999,6 +1011,80 @@ class MiiChannelContext(CommonClient.CommonContext):
         except Exception as e:
             CommonClient.logger.debug(f"Could not mirror the progress badge into Dolphin: {e!r}")
 
+    def _apply_traps(self, miis: List[Mii]) -> None:
+        """Turn received trap items into effects, once each (traps.py).
+
+        Nothing happens until the server said how many traps earlier
+        sessions already applied -- otherwise every restart would replay
+        them all."""
+        import random as _random
+
+        key = traps_done_key(self.team, self.slot)
+        if self.traps.done is None:
+            if key not in self.stored_data:
+                return
+            self.traps.set_done(int(self.stored_data.get(key) or 0))
+        if not self.traps.pending:
+            return
+
+        rng = _random.Random()
+        protected = {m.name for m in miis if m.name.startswith("Target ")}
+        applied = 0
+        while self.traps.pending:
+            name = self.traps.pending.pop(0)
+            applied += 1
+            if name == "Tool Jam Trap":
+                owned = [label for label, items in JAM_TARGETS.items()
+                         if any(item in self.unlocked_items for item in items)]
+                if not owned:
+                    CommonClient.logger.info("Tool Jam Trap! ...but you have no tool to jam yet.")
+                    continue
+                label = rng.choice(owned)
+                self.traps.jam(label)
+                CommonClient.logger.info(
+                    f"Tool Jam Trap! The {label} tool is locked for {int(TOOL_JAM_SECONDS)} seconds.")
+            elif name in ("Paint Spill Trap", "Growth Spurt Trap"):
+                victim = pick_victim(rng, miis, protected)
+                if victim is None or not self.mii_db_path:
+                    CommonClient.logger.info(f"{name}! ...but you have no Mii to hit.")
+                    continue
+                if name == "Paint Spill Trap":
+                    field_name, value = paint_spill(rng, victim)
+                    changes = {field_name: value}
+                else:
+                    changes = growth_spurt(rng, victim)
+                for field_name, value in changes.items():
+                    try:
+                        write_mii_field(self.mii_db_path, victim.slot, field_name, value)
+                    except Exception as e:
+                        CommonClient.logger.warning(f"{name}: could not change {victim.name}: {e!r}")
+                self._mirror_fields_in_ram(victim.name, changes)
+                what = ", ".join(f"{field.replace(chr(95), chr(32))} {value}"
+                                 for field, value in changes.items())
+                CommonClient.logger.info(f"{name}! {victim.name} now has {what}.")
+            else:
+                CommonClient.logger.info(f"{name} received -- this client can't play it yet.")
+
+        self.traps.done += applied
+        Utils.async_start(self.send_msgs([{
+            "cmd": "Set", "key": key, "default": 0, "want_reply": False,
+            "operations": [{"operation": "replace", "value": self.traps.done}],
+        }]))
+
+    def _mirror_fields_in_ram(self, mii_name: str, changes: Dict[str, int]) -> None:
+        """Same fields on the running game's copy of the Mii, so a trap shows
+        without leaving the channel. Silent on failure: the save has it."""
+        if _dme is None:
+            return
+        try:
+            if not self._ensure_dme_hooked():
+                return
+            for entry_addr, _mii in find_mii_entries_by_name(read_wii_memory(_dme), mii_name):
+                for field_name, value in changes.items():
+                    write_mii_field_ram(_dme, entry_addr, field_name, value)
+        except Exception as e:
+            CommonClient.logger.debug(f"Could not mirror a trap into Dolphin: {e!r}")
+
     async def poll_mii_database(self) -> None:
         while not self.exit_event.is_set():
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
@@ -1037,6 +1123,9 @@ class MiiChannelContext(CommonClient.CommonContext):
                     continue
                 self.seen_item_indices.add(i)
                 name = _ID_TO_ITEM_NAME.get(network_item.item)
+                if name in TRAP_ITEMS:
+                    self.traps.receive(name)
+                    continue
                 if name:
                     self.unlocked_items.add(name)
                     if name in progressive_item_counts:
@@ -1047,6 +1136,7 @@ class MiiChannelContext(CommonClient.CommonContext):
             except OSError as e:
                 CommonClient.logger.debug(f"Could not read {self.mii_db_path}: {e!r}")
                 return
+            self._apply_traps(all_miis)
 
             # Target previews are synthetic Miis we write into RFL_DB.dat so
             # the player can see every target standing in the Plaza next to
@@ -1516,6 +1606,18 @@ class MiiChannelContext(CommonClient.CommonContext):
             def _b(item_name: str) -> int:
                 return 0x01 if item_name in self.unlocked_items else 0x00
 
+            # Our text in the Plaza "?" window. Rewritten whenever RAM lost
+            # it (the game clears this area while it boots).
+            try:
+                help_text = HELP_TEXT.encode("utf-16-be")[:HELP_TEXT_BYTES - 2]
+                help_text = help_text + bytes(HELP_TEXT_BYTES - len(help_text))
+                if _dme.read_bytes(HELP_TEXT_ADDR, 0x20) != help_text[:0x20]:
+                    help_title = HELP_TITLE.encode("utf-16-be")[:HELP_TITLE_BYTES - 2]
+                    _dme.write_bytes(HELP_TEXT_ADDR, help_text)
+                    _dme.write_bytes(HELP_TITLE_ADDR, help_title + bytes(HELP_TITLE_BYTES - len(help_title)))
+            except Exception as e:
+                CommonClient.logger.debug(f"Could not write the help text: {e!r}")
+
             for addr, bitmask, label in (
                 (EYE_LOCK_BITMASK_ADDR, eye_bitmask, "eye"),
                 (EYEBROW_LOCK_BITMASK_ADDR, eyebrow_bitmask, "eyebrow"),
@@ -1553,6 +1655,8 @@ class MiiChannelContext(CommonClient.CommonContext):
                     # still runs but never reverts anything. (Simply not
                     # writing would leave RAM at its boot value, 0 = all
                     # locked -- the opposite of switching the layer off.)
+                    if self.traps.is_jammed(label):
+                        bitmask = 0x00          # Tool Jam Trap: locked again for a while
                     _dme.write_bytes(addr, bytes([bitmask if self.features["asm_locks"] else 0xFF]))
                 except Exception as e:
                     CommonClient.logger.debug(f"ASM lock-bitmask write failed for {label} (will retry): {e!r}")

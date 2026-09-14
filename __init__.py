@@ -119,10 +119,28 @@ class MiiChannelWorld(World):
                 f"{num_locations} locations -- raise target_count (currently "
                 f"{self.options.target_count.value})."
             )
+        # Traps take trap_percentage of the room left for filler.
+        weights = self._trap_weights()
+        names = [name for name, weight in weights.items() if weight > 0]
+        if names:
+            free = num_locations - len(item_pool)
+            for _ in range(free * self.options.trap_percentage.value // 100):
+                pick = self.random.choices(names, weights=[weights[n] for n in names])[0]
+                item_pool.append(self.create_item(pick))
         while len(item_pool) < num_locations:
             item_pool.append(self.create_item(self.random.choice(filler_item_names)))
 
         self.multiworld.itempool += item_pool
+
+    def _trap_weights(self) -> Dict[str, int]:
+        o = self.options
+        return {
+            "Quit Without Saving Trap": o.quit_without_saving_trap_weight.value,
+            "Tool Jam Trap": o.tool_jam_trap_weight.value,
+            "Paint Spill Trap": o.paint_spill_trap_weight.value,
+            "Growth Spurt Trap": o.growth_spurt_trap_weight.value,
+            "Big Head Trap": o.big_head_trap_weight.value,
+        }
 
     def get_filler_item_name(self) -> str:
         return self.random.choice(filler_item_names)
