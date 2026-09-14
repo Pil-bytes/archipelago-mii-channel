@@ -139,10 +139,8 @@ FIELD_MIN: Dict[str, int] = {
     "eyebrow_vert_pos": 3,
 }
 
-# Neutral values used to clamp mole sub-fields when a generated target has
-# mole_enabled=0, matching the in-game editor's own default slider positions
-# for a mole that isn't placed (same values locks.py reverts to).
-_MOLE_DEFAULTS = {"mole_size": 4, "mole_vert_pos": 20, "mole_horiz_pos": 2}
+def _roll(rng: random.Random, field: str) -> int:
+    return rng.randint(FIELD_MIN.get(field, 0), FIELD_MAX[field])
 
 
 def generate_targets(rng: random.Random, count: int) -> List[Dict[str, int]]:
@@ -150,15 +148,30 @@ def generate_targets(rng: random.Random, count: int) -> List[Dict[str, int]]:
     (pass the World's own self.random for AP-seed determinism). Each recipe
     is {field_name: value} covering every field in ALL_TARGET_FIELDS. Must
     only be called once per world generation -- the result is sent to the
-    client via slot_data and has to stay frozen for the whole seed."""
+    client via slot_data and has to stay frozen for the whole seed.
+
+    No check may be free: a category equal to a from-scratch Mii used to be
+    ticked the moment the player created their first Mii (four at once in
+    the 2026-09-11 playtest), so every category is re-rolled until it
+    differs from locks.FIELD_DEFAULTS, and the body until it falls outside
+    BODY_TOLERANCE of the default. Every target also wears glasses, a mole
+    and a moustache: their colour and movement checks are invisible (and not
+    editable) without them."""
+    from .locks import FIELD_DEFAULTS
+
     targets: List[Dict[str, int]] = []
     for _ in range(count):
-        recipe = {
-            field: rng.randint(FIELD_MIN.get(field, 0), FIELD_MAX[field])
-            for field in ALL_TARGET_FIELDS
-        }
-        if not recipe["mole_enabled"]:
-            recipe.update(_MOLE_DEFAULTS)
+        recipe = {field: _roll(rng, field) for field in ALL_TARGET_FIELDS}
+        recipe["glasses_type"] = rng.randint(1, FIELD_MAX["glasses_type"])
+        recipe["mole_enabled"] = 1
+        recipe["mustache_type"] = rng.randint(1, FIELD_MAX["mustache_type"])
+        for fields in CATEGORY_FIELDS.values():
+            while all(recipe[f] == FIELD_DEFAULTS[f] for f in fields):
+                for f in fields:
+                    recipe[f] = _roll(rng, f)
+        while all(abs(recipe[f] - FIELD_DEFAULTS[f]) <= BODY_TOLERANCE for f in BODY_FIELDS):
+            for f in BODY_FIELDS:
+                recipe[f] = _roll(rng, f)
         targets.append(recipe)
     return targets
 

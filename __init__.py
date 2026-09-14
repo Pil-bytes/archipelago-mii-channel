@@ -4,7 +4,8 @@ import worlds.LauncherComponents as LauncherComponents
 from BaseClasses import ItemClassification, Region, Tutorial
 from worlds.AutoWorld import WebWorld, World
 
-from .checks import MILESTONE_CHECKS, TARGET_CHECK_CATEGORIES_ALL, VICTORY_NAME, target_location_name
+from .checks import (MILESTONE_CHECKS, PERFECT_COPY_CATEGORY, TARGET_CHECK_CATEGORIES,
+                     TARGET_CHECK_CATEGORIES_ALL, VICTORY_NAME, target_location_name)
 from .items import MiiChannelItem, ItemData, item_table, filler_item_names, progressive_item_counts
 from .locations import MiiChannelLocation, location_name_to_id
 from .options import MiiChannelOptions
@@ -125,6 +126,46 @@ class MiiChannelWorld(World):
 
     def get_filler_item_name(self) -> str:
         return self.random.choice(filler_item_names)
+
+    def set_rules(self) -> None:
+        """Every check needs the items that make its values selectable.
+
+        Without rules the generator treated every check as open from the
+        start and could put an item behind its own check (Glasses Case on
+        "Glasses Type Match"). locks.category_needs is the same computation
+        the client's envelope list uses, so "in logic" means the same thing
+        in both places. Favorite Color, Body and the Create-N-Miis
+        milestones need nothing: they are where the chain starts."""
+        from .locks import category_needs, item_copies
+        from .targets import CATEGORY_FIELDS
+
+        player = self.player
+
+        def has_all(needs: Dict[str, int]):
+            return lambda state: all(state.has(item, player, n) for item, n in needs.items())
+
+        def merge(into: Dict[str, int], needs: Dict[str, int]) -> None:
+            for item, n in needs.items():
+                into[item] = max(into.get(item, 0), n)
+
+        everything: Dict[str, int] = {}
+        for i, target in enumerate(self.target_miis):
+            perfect: Dict[str, int] = {}
+            for category in TARGET_CHECK_CATEGORIES:
+                if category not in CATEGORY_FIELDS:      # Body
+                    continue
+                needs = category_needs(target, CATEGORY_FIELDS[category])
+                merge(perfect, needs)
+                if needs:
+                    location = self.multiworld.get_location(target_location_name(i, category), player)
+                    location.access_rule = has_all(needs)
+            self.multiworld.get_location(
+                target_location_name(i, PERFECT_COPY_CATEGORY), player).access_rule = has_all(perfect)
+            merge(everything, perfect)
+
+        self.multiworld.get_location(VICTORY_NAME, player).access_rule = has_all(everything)
+        self.multiworld.get_location("Use Every Face Shape", player).access_rule = has_all(
+            {"Face Shape Tool": item_copies("Face Shape Tool")})
 
     def generate_basic(self) -> None:
         self.multiworld.completion_condition[self.player] = lambda state: state.has("Victory", self.player)

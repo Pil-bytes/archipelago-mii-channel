@@ -126,6 +126,7 @@ HAIRSTYLE_CLASSIC_ITEM = "Progressive Hairstyle: Classic"
 HAIRSTYLE_WILD_ITEM = "Progressive Hairstyle: Wild"
 HAIRSTYLE_CLASSIC_MAX = 35  # hair_type 0-35 = classic pack, 36-71 = wild pack
 HAIRSTYLE_DEFAULT_TYPE = 33  # user-picked "basic Mii" default, not 0
+HAIR_PACK_PAGES = 3          # each pack is three editor pages = three copies
 HAIR_COLOR_ITEM = "Hair Color"
 HAIR_COLOR_DEFAULT = 1  # real in-game default (confirmed live 2026-09-02), not 0
 
@@ -204,6 +205,12 @@ def item_copies(item_name: str) -> int:
 
     if item_name in SPREAD_ITEMS:
         return GATING_ITEM_COPIES
+    if item_name in _PAGE_ITEM.values():
+        # One copy per editor page (eye 4, eyebrow 2, mouth 2), exactly what
+        # items.py puts in the pool. Counting their values instead asked for
+        # 4 copies of the eyebrow/mouth editors when only 2 exist.
+        field = next(f for f, i in _PAGE_ITEM.items() if i == item_name)
+        return max(EDITOR_PAGE[field]) + 1
 
     fields = ITEM_FIELD_LOCKS.get(item_name) or {"hair_color": HAIR_COLOR_DEFAULT}
     # Values other than the default -- the default is never taken away, so
@@ -295,6 +302,13 @@ def find_violations(
             if current == default_value:
                 continue
 
+            if field_name in EDITOR_PAGE:
+                # Page-gated grid: copy n opens page n-1, as in the editor.
+                req = _editor_requirement(field_name, current)
+                if req is not None and owned < req[1]:
+                    violations[field_name] = default_value
+                continue
+
             field_max = FIELD_MAX.get(field_name, default_value)
             field_min = FIELD_MIN.get(field_name, 0)
 
@@ -309,11 +323,14 @@ def find_violations(
             ):
                 violations[field_name] = default_value
 
-    if mii.hair_type > HAIRSTYLE_CLASSIC_MAX:
-        if HAIRSTYLE_WILD_ITEM not in unlocked_items:
-            violations["hair_type"] = HAIRSTYLE_DEFAULT_TYPE
-    elif mii.hair_type != HAIRSTYLE_DEFAULT_TYPE:
-        if HAIRSTYLE_CLASSIC_ITEM not in unlocked_items:
+    # Hair packs split by editor PAGE (pages 0-2 Classic, 3-5 Wild; copy n of
+    # a pack opens its page n-1), the same rule as the in-editor ASM lock. The
+    # old split by type id (0-35 / 36-71) disagreed with the editor.
+    hair_req = _editor_requirement("hair_type", int(mii.hair_type))
+    if hair_req is not None:
+        pack, pack_needed = hair_req
+        pack_owned = counts.get(pack, HAIR_PACK_PAGES if pack in unlocked_items else 0)
+        if pack_owned < pack_needed:
             violations["hair_type"] = HAIRSTYLE_DEFAULT_TYPE
 
     if HAIRSTYLE_CLASSIC_ITEM not in unlocked_items and HAIRSTYLE_WILD_ITEM not in unlocked_items:
@@ -380,12 +397,95 @@ def _gating_item(field_name: str, value: int) -> Optional[str]:
     if field_name == "hair_type":
         if value == HAIRSTYLE_DEFAULT_TYPE:
             return None
-        return HAIRSTYLE_WILD_ITEM if value > HAIRSTYLE_CLASSIC_MAX else HAIRSTYLE_CLASSIC_ITEM
+        req = _editor_requirement("hair_type", value)
+        return req[0] if req else None
     if field_name == "hair_color":
         return HAIR_COLOR_ITEM
     if field_name == "hair_part_reversed":
         return HAIRSTYLE_CLASSIC_ITEM if value else None
     return _FIELD_ITEM.get(field_name)
+
+
+# Value of every target field on a Mii made from scratch. Generation avoids
+# these (a target category equal to them would be a free check).
+FIELD_DEFAULTS: Dict[str, int] = {
+    field: value for fields in ITEM_FIELD_LOCKS.values() for field, value in fields.items()
+}
+FIELD_DEFAULTS.update({
+    "hair_type": HAIRSTYLE_DEFAULT_TYPE, "hair_color": HAIR_COLOR_DEFAULT,
+    "hair_part_reversed": 0, "favorite_color": 0, "height": 64, "weight": 64,
+})
+
+# Fields the editor only lets you change (and only shows) once something is
+# on the face: glasses size/colour need glasses, a mole must be placed to be
+# moved, moustache size/position and facial hair colour need facial hair.
+# Seen live 2026-09-11: "Glasses Movement" was reported doable on a Mii
+# without glasses, and the size buttons did nothing.
+CARRIER_FIELDS: Dict[str, Tuple[str, int]] = {
+    "glasses_color": ("Glasses Case", 1), "glasses_size": ("Glasses Case", 1),
+    "glasses_vert_pos": ("Glasses Case", 1),
+    "mole_size": ("Mole Marker", 1), "mole_vert_pos": ("Mole Marker", 1),
+    "mole_horiz_pos": ("Mole Marker", 1),
+    "facial_hair_color": ("Facial Hair Kit", 1), "mustache_size": ("Facial Hair Kit", 1),
+    "mustache_vert_pos": ("Facial Hair Kit", 1),
+}
+
+
+def _copies_for(item: str, field_name: str, value: int, default: int) -> int:
+    """Fewest copies of `item` that let `field_name` hold `value` -- the
+    same arithmetic find_violations uses, run forwards."""
+    from .targets import FIELD_MAX, FIELD_MIN
+
+    if value == default:
+        return 0
+    total = item_copies(item)
+    field_max = FIELD_MAX.get(field_name, default)
+    field_min = FIELD_MIN.get(field_name, 0)
+    for n in range(1, total + 1):
+        if item in SPREAD_ITEMS:
+            if abs(value - default) <= _allowed_spread(field_min, field_max, default, n):
+                return n
+        elif _palette_allows(value, default, field_max, n, total, PALETTE_FIRST_STEP.get(item, 1)):
+            return n
+    return total
+
+
+def field_needs(field_name: str, value: int) -> Dict[str, int]:
+    """{item: copies} needed to give `field_name` the value `value`."""
+    needs: Dict[str, int] = {}
+
+    def need(item: str, n: int) -> None:
+        if n > 0:
+            needs[item] = max(needs.get(item, 0), n)
+
+    if field_name in EDITOR_PAGE:              # eye/eyebrow/mouth/hair grids: by page
+        req = _editor_requirement(field_name, value)
+        if req is not None:
+            need(*req)
+    elif field_name == "hair_color":
+        need(HAIR_COLOR_ITEM, _copies_for(HAIR_COLOR_ITEM, field_name, value, HAIR_COLOR_DEFAULT))
+    elif field_name == "hair_part_reversed":
+        if value:
+            need(HAIRSTYLE_CLASSIC_ITEM, 1)
+    elif field_name in _FIELD_ITEM:
+        item = _FIELD_ITEM[field_name]
+        need(item, _copies_for(item, field_name, value, ITEM_FIELD_LOCKS[item][field_name]))
+
+    if field_name in CARRIER_FIELDS:
+        need(*CARRIER_FIELDS[field_name])
+    return needs
+
+
+def category_needs(target: Dict[str, int], fields: List[str]) -> Dict[str, int]:
+    """{item: copies} needed to match `target` on all of `fields` at once."""
+    needs: Dict[str, int] = {}
+    hair_pack = "hair_type" in fields and bool(field_needs("hair_type", int(target["hair_type"])))
+    for field_name in fields:
+        if field_name == "hair_part_reversed" and hair_pack:
+            continue    # any hair pack allows flipping the part; the hairstyle already needs one
+        for item, n in field_needs(field_name, int(target[field_name])).items():
+            needs[item] = max(needs.get(item, 0), n)
+    return needs
 
 
 def requirements_for(
@@ -394,50 +494,11 @@ def requirements_for(
     unlocked_items: set,
     item_counts: Dict[str, int],
 ) -> List[Tuple[str, int, int]]:
-    """What still stands between `mii` and holding `wanted` (field -> value).
-
-    Returns [(item, copies owned, copies needed)] for every item that blocks
-    one of those values right now -- the envelope screen shows this when a
-    locked characteristic is clicked. find_violations stays the single source
-    of truth: each field is tried on a copy of the Mii holding the wanted
-    value, with the gating item's count raised one copy at a time until the
-    violation disappears."""
-    import dataclasses
-
-    probe = dataclasses.replace(mii, **{
-        f: (bool(v) if isinstance(getattr(mii, f), bool) else v) for f, v in wanted.items()
-    })
-    needs: Dict[str, Tuple[int, int]] = {}
-    for field_name, value in wanted.items():
-        item = _gating_item(field_name, int(value))
-        if item is None:
-            continue
-        membership = item in (HAIRSTYLE_CLASSIC_ITEM, HAIRSTYLE_WILD_ITEM)
-        total = 1 if membership else item_copies(item)
-        owned = (1 if item in unlocked_items else 0) if membership else \
-            item_counts.get(item, total if item in unlocked_items else 0)
-        needed = total
-        for n in range(0, total + 1):
-            counts = dict(item_counts)
-            unlocked = set(unlocked_items)
-            if membership:
-                (unlocked.add if n else unlocked.discard)(item)
-            else:
-                counts[item] = n
-                (unlocked.add if n else unlocked.discard)(item)
-            if field_name not in find_violations(probe, unlocked, counts):
-                needed = n
-                break
-        if needed > owned:
-            prev = needs.get(item, (owned, 0))
-            needs[item] = (owned, max(prev[1], needed))
-
-        # The editor's own page gating (ASM layer), which can ask for more.
-        editor = _editor_requirement(field_name, int(value))
-        if editor is not None:
-            e_item, e_need = editor
-            e_owned = item_counts.get(e_item, 0)
-            if e_need > e_owned:
-                prev = needs.get(e_item, (e_owned, 0))
-                needs[e_item] = (e_owned, max(prev[1], e_need))
-    return [(item, have, need) for item, (have, need) in needs.items()]
+    """[(item, copies owned, copies needed)] still missing before `wanted`
+    (field -> value) can be put on a Mii. Same computation as the world's
+    access rules, so the envelope's colours agree with the generator."""
+    return [
+        (item, item_counts.get(item, 0), n)
+        for item, n in category_needs(wanted, list(wanted)).items()
+        if item_counts.get(item, 0) < n
+    ]

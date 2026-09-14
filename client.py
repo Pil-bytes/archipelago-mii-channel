@@ -958,12 +958,10 @@ class MiiChannelContext(CommonClient.CommonContext):
 
         Miis with no target assigned are left alone, and a Mii that already
         completed its target keeps its "Match N" badge."""
-        # Never while the game runs: writing RFL_DB.dat (and patching the
-        # Mii records in RAM, whose CRC then no longer matches) while the
-        # channel is saving froze the emulation right after a new Mii was
-        # saved (2026-09-11, "t1"). The badges catch up on the next launch.
-        if self._dolphin_is_running():
-            return
+        # Live on purpose (user's choice, 2026-09-14): an emulation freeze
+        # was seen once right after saving a new Mii while this wrote
+        # RFL_DB.dat and RAM (2026-09-11), but a crash costs nothing and the
+        # live badge is much nicer. First suspect if freezes come back.
         slot_to_target = {mii.slot: target_index for target_index, mii in assignment.items()}
         total = len(TARGET_CHECK_CATEGORIES)
 
