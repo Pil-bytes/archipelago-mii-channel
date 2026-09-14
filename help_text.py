@@ -69,9 +69,11 @@ SCREEN_TEXTS: Dict[str, str] = {
     "0000034": (
         "Grab a Mii (A+B) and drag it to\n"
         "the envelope: the list shows what\n"
-        "it still has to match."
+        "it still has to match. Grey-red:\n"
+        "locked, white: doable, blue: hinted,\n"
+        "green: sent, orange: sent but lost."
     ),
-    "0101600": "Click a row for details\nor to ask for a hint.",
+    "0101600": "Click a row for details or a\nhint, the header for colours.",
     # Erase
     "0000031": (
         "Grab a Mii (A+B), drag it to Erase.\n"

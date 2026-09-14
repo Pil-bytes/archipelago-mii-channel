@@ -33,6 +33,13 @@ TEXT_TABLE_MAX = 16
 TEXT_BUFFER_BASE = 0x803C5C00
 TEXT_BUFFER_BYTES = 0x300
 
+# The same texts, written into the channel's message file (MESGbmg1 in MEM2).
+# Messages whose room a longer text may take -- never shown offline.
+BMG_DONOR_MESSAGES = ["0000060", "0000024", "0000083", "0000084", "0600003", "0600004",
+                      "0600005", "0600200", "0600400", "0000087", "0000066", "0000067"]
+# Left to the Gecko table: no donor is big enough for it.
+BMG_SKIP_MESSAGES = {"0000023"}
+
 
 def _screen_text_blobs() -> Tuple[bytes, bytes]:
     """(table bytes, buffers bytes) for SCREEN_TEXTS."""
@@ -135,6 +142,11 @@ def _item_colour(flags: int) -> Tuple[int, int]:
         return AP_TRAP
     return AP_FILLER
 WC24_SEPARATOR = "-------"
+# Shown when the header row of the envelope list is clicked (the dialog
+# holds about 175 characters in all, the summary above it included).
+WC24_COLOUR_LEGEND = ("Grey-red: locked  White: doable\n"
+                      "Blue: hinted  Violet: unlock hinted\n"
+                      "Green: sent  Orange: sent, lost")
 
 # The user's colour scheme (2026-09-11).
 COL_LOCKED = (0xC07878FF, 0x8C5050FF)    # grey-red: not unlocked yet
@@ -456,6 +468,8 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.progressive_counts = {}
         self.seen_item_indices = set()
         self.traps = TrapState()
+        self.bmg_addr: Optional[int] = None
+        self.bmg_checked_at = 0.0
         self.dme_missing_warned = False
         self.dme_hook_warned = False
         self.asm_dme_missing_warned = False
@@ -843,7 +857,8 @@ class MiiChannelContext(CommonClient.CommonContext):
         header = (f"T{target_index + 1} is a perfect copy!" if not todo and not lost
                   else f"T{target_index + 1}: {len(todo)} left")
         summary = (f"Target {target_index + 1} - {mii.name}\n{len(todo)} to do, "
-                   f"{len(sent)} sent, {len(lost)} lost")
+                   f"{len(sent)} sent, {len(lost)} lost\n"
+                   f"{WC24_COLOUR_LEGEND}")
         separator: Row = (WC24_SEPARATOR, WC24_COLOR_SEPARATOR, "", "", None)
         rows: List[Row] = [(header, WC24_COLOR_HEADER, summary, "OK", None)]
         rows += [todo_row(c) for c in todo]
@@ -1099,6 +1114,84 @@ class MiiChannelContext(CommonClient.CommonContext):
                     write_mii_field_ram(_dme, entry_addr, field_name, value)
         except Exception as e:
             CommonClient.logger.debug(f"Could not mirror a trap into Dolphin: {e!r}")
+
+    def _repoint_screen_messages(self) -> None:
+        """Write SCREEN_TEXTS into the game's message file in RAM, once per
+        boot: a text that fits replaces the message in place, a longer one
+        goes into a donor message's room and the message is repointed."""
+        import time as _time
+
+        def u16(addr: int) -> int:
+            return int.from_bytes(_dme.read_bytes(addr, 2), "big")
+
+        def u32(addr: int) -> int:
+            return int.from_bytes(_dme.read_bytes(addr, 4), "big")
+
+        try:
+            if self.bmg_addr is not None and _dme.read_bytes(self.bmg_addr, 8) != b"MESGbmg1":
+                self.bmg_addr = None
+            if self.bmg_addr is None:
+                now = _time.monotonic()
+                if now - self.bmg_checked_at < 5.0:
+                    return
+                self.bmg_checked_at = now
+                for base in range(0x90000000, 0x94000000, 0x100000):
+                    try:
+                        found = _dme.read_bytes(base, 0x100000).find(b"MESGbmg1")
+                    except Exception:
+                        continue
+                    if found != -1:
+                        self.bmg_addr = base + found
+                        break
+                if self.bmg_addr is None:
+                    return
+
+            header = self.bmg_addr
+            sections: Dict[bytes, int] = {}
+            p = header + 0x20
+            for _ in range(u32(header + 12)):
+                sections[_dme.read_bytes(p, 4)] = p
+                p += u32(p + 4)
+            inf, dat, mid = sections[b"INF1"], sections[b"DAT1"], sections[b"MID1"]
+            n, entry_size = u16(inf + 8), u16(inf + 10)
+            mid_raw = _dme.read_bytes(mid + 0x10, u16(mid + 8) * 4)
+            labels = ["%07d" % int.from_bytes(mid_raw[i:i + 4], "big") for i in range(0, len(mid_raw), 4)]
+            index = {label: k for k, label in enumerate(labels[:n])}
+            inf_raw = _dme.read_bytes(inf + 0x10, n * entry_size)
+            offsets = [int.from_bytes(inf_raw[k * entry_size:k * entry_size + 4], "big") for k in range(n)]
+
+            wanted = [(label, text.encode("utf-16-be", "replace") + b"\0\0")
+                      for label, text in SCREEN_TEXTS.items()
+                      if label in index and label not in BMG_SKIP_MESSAGES]
+            # Already done on this boot (the client may have restarted)?
+            for label, data in wanted:
+                if _dme.read_bytes(dat + 8 + offsets[index[label]], len(data)) == data:
+                    return
+
+            ordered = sorted(set(offsets))
+
+            def room(offset: int) -> int:
+                later = [o for o in ordered if o > offset]
+                return later[0] - offset if later else 0
+
+            donors = [[offsets[index[d]], room(offsets[index[d]])]
+                      for d in BMG_DONOR_MESSAGES if d in index]
+            for label, data in wanted:
+                k = index[label]
+                if len(data) <= room(offsets[k]):
+                    _dme.write_bytes(dat + 8 + offsets[k], data)
+                    continue
+                donor = next((d for d in donors if d[1] >= len(data)), None)
+                if donor is None:
+                    CommonClient.logger.debug(f"No room in the message file for {label}")
+                    continue
+                _dme.write_bytes(dat + 8 + donor[0], data)
+                _dme.write_bytes(inf + 0x10 + k * entry_size, donor[0].to_bytes(4, "big"))
+                used = len(data) + (len(data) & 1)
+                donor[0] += used
+                donor[1] -= used
+        except Exception as e:
+            CommonClient.logger.debug(f"Could not rewrite the screen messages: {e!r}")
 
     async def poll_mii_database(self) -> None:
         while not self.exit_event.is_set():
@@ -1633,6 +1726,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                     _dme.write_bytes(TEXT_TABLE_ADDR, table)
             except Exception as e:
                 CommonClient.logger.debug(f"Could not write the screen texts: {e!r}")
+            self._repoint_screen_messages()
 
             for addr, bitmask, label in (
                 (EYE_LOCK_BITMASK_ADDR, eye_bitmask, "eye"),
