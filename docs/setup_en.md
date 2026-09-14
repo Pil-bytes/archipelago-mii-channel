@@ -66,6 +66,12 @@ as soon as a saved Mii matches. No clicking required.
 - For each target: one check per category matched exactly, one for the body
   (height and weight within 5), and "Perfect Copy" for a single Mii matching
   everything at once.
+- No check is free: a target never shares a category with a brand-new Mii,
+  and every target wears glasses, a mole and a moustache.
+- **Where to start**: nothing locks a target's Favorite Color and Body, nor
+  the "Create N Miis" milestones -- the first items are always there. Every
+  other check is in logic once you own the items it needs (the envelope list
+  shows exactly which).
 - **Goal** ("Become a Mii Master"): complete every check of every target.
 
 ## Client commands
