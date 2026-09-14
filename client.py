@@ -22,14 +22,29 @@ from .locks import find_violations, requirements_for
 from .items import TRAP_ITEMS
 from .traps import (JAM_TARGETS, TOOL_JAM_SECONDS, TrapState, growth_spurt, paint_spill,
                     pick_victim, traps_done_key)
-from .help_text import HELP_TEXT, HELP_TITLE
+from .help_text import SCREEN_TEXTS
 
-# Plaza "?" window text (gecko dialog block, BuildWC24DialogHelp): UTF-16BE,
-# empty = the game keeps its own text.
-HELP_TEXT_ADDR = 0x803C5600
-HELP_TEXT_BYTES = 0x400
-HELP_TITLE_ADDR = 0x803C5A00
-HELP_TITLE_BYTES = 0x40
+# Per-screen texts (gecko dialog block, BuildWC24DialogTable). The table at
+# TEXT_TABLE_ADDR is a u32 count followed by 12-byte entries: the message id
+# as 8 ASCII bytes (7 digits + NUL) and a pointer to its UTF-16BE text in
+# TEXT_BUFFER_BASE. The game keeps its own text for any id not listed.
+TEXT_TABLE_ADDR = 0x803C5B00
+TEXT_TABLE_MAX = 16
+TEXT_BUFFER_BASE = 0x803C5C00
+TEXT_BUFFER_BYTES = 0x300
+
+
+def _screen_text_blobs() -> Tuple[bytes, bytes]:
+    """(table bytes, buffers bytes) for SCREEN_TEXTS."""
+    items = list(SCREEN_TEXTS.items())[:TEXT_TABLE_MAX]
+    table = bytearray(len(items).to_bytes(4, "big"))
+    buffers = bytearray()
+    for i, (message_id, text) in enumerate(items):
+        table += message_id.encode("ascii")[:7].ljust(8, b"\0")
+        table += (TEXT_BUFFER_BASE + i * TEXT_BUFFER_BYTES).to_bytes(4, "big")
+        encoded = text.encode("utf-16-be", "replace")[:TEXT_BUFFER_BYTES - 2]
+        buffers += encoded + bytes(TEXT_BUFFER_BYTES - len(encoded))
+    return bytes(table), bytes(buffers)
 from .mii_reader import (
     MII_CHANNEL_TITLE_ID,
     Mii,
@@ -1606,17 +1621,18 @@ class MiiChannelContext(CommonClient.CommonContext):
             def _b(item_name: str) -> int:
                 return 0x01 if item_name in self.unlocked_items else 0x00
 
-            # Our text in the Plaza "?" window. Rewritten whenever RAM lost
-            # it (the game clears this area while it boots).
+            # Archipelago texts on the game's screens ("?", mode banners...).
+            # Rewritten whenever RAM lost them (the game clears this area
+            # while it boots). Buffers first, table last: the table is what
+            # makes the game use them.
             try:
-                help_text = HELP_TEXT.encode("utf-16-be")[:HELP_TEXT_BYTES - 2]
-                help_text = help_text + bytes(HELP_TEXT_BYTES - len(help_text))
-                if _dme.read_bytes(HELP_TEXT_ADDR, 0x20) != help_text[:0x20]:
-                    help_title = HELP_TITLE.encode("utf-16-be")[:HELP_TITLE_BYTES - 2]
-                    _dme.write_bytes(HELP_TEXT_ADDR, help_text)
-                    _dme.write_bytes(HELP_TITLE_ADDR, help_title + bytes(HELP_TITLE_BYTES - len(help_title)))
+                table, buffers = _screen_text_blobs()
+                if (_dme.read_bytes(TEXT_TABLE_ADDR, len(table)) != table
+                        or _dme.read_bytes(TEXT_BUFFER_BASE, 0x20) != buffers[:0x20]):
+                    _dme.write_bytes(TEXT_BUFFER_BASE, buffers)
+                    _dme.write_bytes(TEXT_TABLE_ADDR, table)
             except Exception as e:
-                CommonClient.logger.debug(f"Could not write the help text: {e!r}")
+                CommonClient.logger.debug(f"Could not write the screen texts: {e!r}")
 
             for addr, bitmask, label in (
                 (EYE_LOCK_BITMASK_ADDR, eye_bitmask, "eye"),
