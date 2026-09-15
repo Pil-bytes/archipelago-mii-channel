@@ -23,6 +23,7 @@ from .items import TRAP_ITEMS
 from .traps import (JAM_TARGETS, TOOL_JAM_SECONDS, TrapState, growth_spurt, paint_spill,
                     pick_victim, traps_done_key)
 from .help_text import SCREEN_TEXTS
+from .zone_locks import INTERVAL_SECONDS as ZONE_LOCK_INTERVAL_SECONDS, ZoneLockOverlay
 
 # Per-screen texts (gecko dialog block, BuildWC24DialogTable). The table at
 # TEXT_TABLE_ADDR is a u32 count followed by 12-byte entries: the message id
@@ -478,6 +479,8 @@ class MiiChannelContext(CommonClient.CommonContext):
         # _refresh_restore_values).
         self.last_editor_heartbeat: Optional[int] = None
         self.editor_was_open = False
+        # grey veil + padlock over the editor zones still locked (zone_locks.py)
+        self.zone_locks = ZoneLockOverlay(CommonClient.logger)
         self.selected_obj_addr: Optional[int] = None
         self.selected_mii_id: Optional[bytes] = None
         self.last_selected_scan = 0.0
@@ -1621,6 +1624,29 @@ class MiiChannelContext(CommonClient.CommonContext):
         except Exception as e:
             CommonClient.logger.debug(f"Restore-value snapshot failed (will retry): {e!r}")
 
+    async def poll_zone_locks(self) -> None:
+        """Grey veil and one padlock over each editor zone that is still
+        locked, driven by the lock bytes poll_asm_lock_bitmask writes (so a
+        Tool Jam shows too). Only while the editor is open: its heartbeat
+        word moves, and the layout objects exist only then."""
+        if _dme is None:
+            return
+        last_heartbeat = None
+        while not self.exit_event.is_set():
+            await asyncio.sleep(ZONE_LOCK_INTERVAL_SECONDS)
+            if not self.server or not self.slot or not self._ensure_dme_hooked():
+                self.zone_locks.reset()
+                last_heartbeat = None
+                continue
+            try:
+                heartbeat = int.from_bytes(_dme.read_bytes(EDITOR_HEARTBEAT_ADDR, 4), "big")
+                editor_open = last_heartbeat is not None and heartbeat != last_heartbeat
+                last_heartbeat = heartbeat
+                self.zone_locks.tick(_dme, editor_open)
+            except Exception as e:
+                CommonClient.logger.debug(f"Editor zone padlocks: {e!r}")
+                self.zone_locks.reset()
+
     async def poll_asm_lock_bitmask(self) -> None:
         """Keep the injected ASM trampoline's eye-page lock bitmask in sync
         with which items the player actually owns. This drives real-time,
@@ -1836,6 +1862,7 @@ def main(*args) -> None:
         # gracefully (falls back to save-file correction only) if Dolphin
         # or dolphin_memory_engine isn't available.
         ctx.asm_lock_task = asyncio.create_task(ctx.poll_asm_lock_bitmask(), name="MiiChannelASMLock")
+        ctx.zone_lock_task = asyncio.create_task(ctx.poll_zone_locks(), name="MiiChannelZoneLocks")
         ctx.selected_task = asyncio.create_task(ctx.poll_selected_mii(), name="MiiChannelSelectedMii")
 
         if CommonClient.gui_enabled:
