@@ -865,7 +865,12 @@ class MiiChannelContext(CommonClient.CommonContext):
                    f"{WC24_COLOUR_LEGEND}")
         separator: Row = (WC24_SEPARATOR, WC24_COLOR_SEPARATOR, "", "", None)
         rows: List[Row] = [(header, WC24_COLOR_HEADER, summary, "OK", None)]
-        rows += [todo_row(c) for c in todo]
+        # Doable checks first, then the hinted ones, then what is still
+        # locked (user request 2026-09-15); category order within each group.
+        order = {COL_IN_LOGIC: 0, COL_HINTED: 1, COL_WE_HINTED: 2, COL_LOCKED: 3}
+        todo_rows = [todo_row(c) for c in todo]
+        todo_rows.sort(key=lambda row: order.get(row[1], 4))
+        rows += todo_rows
         if sent:
             rows += [separator] + [(c, COL_SENT, sent_message(c, True), "OK", None) for c in sent]
         if lost:
