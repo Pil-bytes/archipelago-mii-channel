@@ -79,4 +79,8 @@ SCREEN_TEXTS: Dict[str, str] = {
         "Grab a Mii (A+B), drag it to Erase.\n"
         "Checks it already sent stay sent."
     ),
+    # Plaza <-> Parade transfers are blocked (gecko block "Block transfers");
+    # these are the game's own refusals, forced on every transfer.
+    "0600500": "Archipelago: Miis can't be sent\nto the Mii Parade.",
+    "0000014": "Archipelago: Miis can't be sent\nfrom the Mii Parade to the Plaza.",
 }
