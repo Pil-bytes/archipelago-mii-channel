@@ -21,7 +21,7 @@ from .checks import (
 )
 from .items import item_table, progressive_item_counts
 from .locations import location_name_to_id
-from .locks import find_violations, requirements_for
+from .locks import find_violations, item_copies, palette_allowed_count, requirements_for
 from .items import TRAP_ITEMS
 from .traps import (JAM_TARGETS, TOOL_JAM_SECONDS, TrapState, growth_spurt, paint_spill,
                     pick_victim, traps_done_key)
@@ -1749,7 +1749,19 @@ class MiiChannelContext(CommonClient.CommonContext):
             eye_bitmask = _progressive_bitmask("Progressive Eye Editor")
             eyebrow_bitmask = _progressive_bitmask("Progressive Eyebrow Editor")
             mouth_bitmask = _progressive_bitmask("Progressive Mouth Editor")
-            nose_bitmask = 0x01 if "Nose Editor" in self.unlocked_items else 0x00
+            # Palette fields (colours, single-page type grids) are gated by a
+            # COUNT, not a flag: the byte says how many non-default values are
+            # selectable, and the trampoline compares the picked value's rank
+            # against it -- the same arithmetic as the save-file layer, so the
+            # editor opens exactly what the player has earned instead of
+            # everything at the first copy (user 2026-09-16).
+            def _count(item_name: str, field: str) -> int:
+                total = item_copies(item_name)
+                owned = self.progressive_counts.get(
+                    item_name, total if item_name in self.unlocked_items else 0)
+                return min(0xFF, palette_allowed_count(item_name, field, owned))
+
+            nose_bitmask = _count("Nose Editor", "nose_type")
 
             # Hairstyle packs are ALSO progressive within themselves (each
             # copy of "Progressive Hairstyle: Classic"/"Wild" unlocks the
@@ -1772,9 +1784,9 @@ class MiiChannelContext(CommonClient.CommonContext):
                 if {"Face Shape Tool", "Makeup Kit"} & self.unlocked_items
                 else 0x00
             )
-            skin_tone_bitmask = 0x01 if "Skin Tone Palette" in self.unlocked_items else 0x00
-            glasses_bitmask = 0x01 if "Glasses Case" in self.unlocked_items else 0x00
-            mole_bitmask = 0x01 if "Mole Marker" in self.unlocked_items else 0x00
+            skin_tone_bitmask = _count("Skin Tone Palette", "skin_color")
+            glasses_bitmask = _count("Glasses Case", "glasses_type")
+            mole_bitmask = _count("Mole Marker", "mole_enabled")
             # Mustache and beard are two separate trampoline blocks (they
             # occupy different bit ranges of the same live word) but share a
             # single gating item -- "Facial Hair Kit" -- matching
@@ -1814,12 +1826,12 @@ class MiiChannelContext(CommonClient.CommonContext):
                 (FACE_SHAPE_LOCK_BITMASK_ADDR, face_shape_bitmask, "face shape"),
                 (SKIN_TONE_LOCK_BITMASK_ADDR, skin_tone_bitmask, "skin tone"),
                 (GLASSES_LOCK_BITMASK_ADDR, glasses_bitmask, "glasses"),
-                (MUSTACHE_LOCK_BITMASK_ADDR, facial_hair_bitmask, "mustache"),
-                (BEARD_LOCK_BITMASK_ADDR, facial_hair_bitmask, "beard"),
+                (MUSTACHE_LOCK_BITMASK_ADDR, _count("Facial Hair Kit", "mustache_type"), "mustache"),
+                (BEARD_LOCK_BITMASK_ADDR, _count("Facial Hair Kit", "beard_type"), "beard"),
                 (MOLE_LOCK_BITMASK_ADDR, mole_bitmask, "mole"),
-                (EYE_COLOR_LOCK_BITMASK_ADDR, _b("Eye Color"), "eye color"),
+                (EYE_COLOR_LOCK_BITMASK_ADDR, _count("Eye Color", "eye_color"), "eye color"),
                 (EYE_MOVEMENT_LOCK_BITMASK_ADDR, _b("Eye Movement"), "eye movement"),
-                (EYEBROW_COLOR_LOCK_BITMASK_ADDR, _b("Eyebrow Color"), "eyebrow color"),
+                (EYEBROW_COLOR_LOCK_BITMASK_ADDR, _count("Eyebrow Color", "eyebrow_color"), "eyebrow color"),
                 # This one used to be pinned unlocked: the ASM layer zeroed a
                 # locked field, and eyebrow_vert_pos rejects 0 (its range
                 # starts at 3 -- FIELD_MIN, established live), so saving froze
@@ -1827,13 +1839,14 @@ class MiiChannelContext(CommonClient.CommonContext):
                 # for this category instead of zeroes, so the lock can be
                 # enforced in real time like every other one.
                 (EYEBROW_MOVEMENT_LOCK_BITMASK_ADDR, _b("Eyebrow Movement"), "eyebrow movement"),
-                (HAIR_COLOR_LOCK_BITMASK_ADDR, _b("Hair Color"), "hair color"),
+                (HAIR_COLOR_LOCK_BITMASK_ADDR, _count("Hair Color", "hair_color"), "hair color"),
                 (NOSE_MOVEMENT_LOCK_BITMASK_ADDR, _b("Nose Movement"), "nose movement"),
-                (MOUTH_COLOR_LOCK_BITMASK_ADDR, _b("Mouth Color"), "mouth color"),
+                (MOUTH_COLOR_LOCK_BITMASK_ADDR, _count("Mouth Color", "mouth_color"), "mouth color"),
                 (MOUTH_MOVEMENT_LOCK_BITMASK_ADDR, _b("Mouth Movement"), "mouth movement"),
-                (GLASSES_COLOR_LOCK_BITMASK_ADDR, _b("Glasses Color"), "glasses color"),
+                (GLASSES_COLOR_LOCK_BITMASK_ADDR, _count("Glasses Color", "glasses_color"), "glasses color"),
                 (GLASSES_MOVEMENT_LOCK_BITMASK_ADDR, _b("Glasses Movement"), "glasses movement"),
-                (FACIAL_HAIR_COLOR_LOCK_BITMASK_ADDR, _b("Facial Hair Color"), "facial hair color"),
+                (FACIAL_HAIR_COLOR_LOCK_BITMASK_ADDR, _count("Facial Hair Color", "facial_hair_color"),
+                 "facial hair color"),
                 (FACIAL_HAIR_MOVEMENT_LOCK_BITMASK_ADDR, _b("Facial Hair Movement"), "facial hair movement"),
                 (MOLE_MOVEMENT_LOCK_BITMASK_ADDR, _b("Mole Movement"), "mole movement"),
             ):

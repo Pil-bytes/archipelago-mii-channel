@@ -262,6 +262,27 @@ def _palette_allows(
     return rank < _palette_allowed_count(unlockable, copies_owned, copies_total, first_step)
 
 
+def palette_allowed_count(item_name: str, field_name: str, copies_owned: int) -> int:
+    """How many non-default values of `field_name` are selectable with
+    `copies_owned` copies of `item_name`.
+
+    The real-time layer in the game needs this as a number: it compares the
+    rank of the picked value (its position with the default taken out)
+    against it, so both layers open exactly the same values at the same
+    time. It used to receive 1 as soon as a single copy had arrived, which
+    opened the whole palette in the editor and let the save-file layer take
+    the colour back afterwards."""
+    from .targets import FIELD_MAX
+
+    total = item_copies(item_name)
+    unlockable = FIELD_MAX.get(field_name, 1)
+    if copies_owned >= total:
+        return unlockable
+    return _palette_allowed_count(
+        unlockable, copies_owned, total, PALETTE_FIRST_STEP.get(item_name, 1)
+    )
+
+
 def _allowed_spread(field_min: int, field_max: int, default: int, copies_owned: int) -> int:
     """How far from `default` the field may move with `copies_owned` copies."""
     span = max(field_max - default, default - field_min)
