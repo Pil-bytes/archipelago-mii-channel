@@ -52,6 +52,10 @@ OLD_TEX_ADDRS = (0x803C9E00, 0x803CA600)   # anything pointing here is ours
 # list back to the end in the same frame. 8 pane pointers, 0 = empty.
 VEIL_TABLE_ADDR = 0x803CB100
 VEIL_SLOTS = 8
+# Groups of the locked zones on screen, read by the Gecko block "Locked
+# zones: no hover" (BuildLockedNoHover.java): a button inside one of them
+# never enters its hovered state -- no zoom, no bring-to-front, no click.
+LOCKED_GROUP_TABLE_ADDR = 0x803CB120
 WINDOW_VT = 0x8025C17C
 PICTURE_VT = 0x8025C058
 BOX_VTS = (WINDOW_VT, PICTURE_VT)
@@ -156,6 +160,18 @@ def _link_after(dme, pane: int, owner: int, after: int) -> None:
     _w32(dme, owner + 0x10, _u32(dme, owner + 0x10) + 1)
 
 
+def _abs_pos(dme, pane: int, window: int) -> Tuple[float, float]:
+    """Position of a pane's origin in window space (translations only)."""
+    x = y = 0.0
+    for _ in range(16):
+        if pane in (0, window):
+            break
+        tx, ty = struct.unpack(">2f", dme.read_bytes(pane + 0x2C, 8))
+        x, y = x + tx, y + ty
+        pane = _u32(dme, pane + 0x0C)
+    return x, y
+
+
 def _texobj(dme, raw: bytes) -> int:
     """GXTexObj of a picture with a texture and tex coords, else 0."""
     if struct.unpack_from(">I", raw, 0)[0] != PICTURE_VT or raw[0xE5] < 1:
@@ -206,7 +222,7 @@ class ZoneLockOverlay:
         self.anchor: Optional[int] = None
         self.windows: List[Tuple[int, List[_Zone]]] = []
         self.donors: List[_Donor] = []
-        self.lent: Dict[int, List[int]] = {}     # window -> lent icons, in list order
+        self.group_table = b""        # last locked group table written
         self.scan_at = MEM2_LO
         self.ticks = 0
 
@@ -235,6 +251,8 @@ class ZoneLockOverlay:
 
     def _build(self, dme, anchor: int) -> None:
         dme.write_bytes(VEIL_TABLE_ADDR, bytes(4 * VEIL_SLOTS))   # nothing lent yet
+        dme.write_bytes(LOCKED_GROUP_TABLE_ADDR, bytes(4 * VEIL_SLOTS))
+        self.group_table = bytes(4 * VEIL_SLOTS)
         root = _u32(dme, anchor + 0x0C)
         windows, donors, missing, stale = [], [], [], 0
         for window in _children(dme, root):
@@ -260,7 +278,9 @@ class ZoneLockOverlay:
                     dme.write_bytes(p + 0xCD, b"\x00")
                     ours.add(p)
                     stale += 1
-                elif (t and "Icon" in _name(raw) and not _name(raw).startswith("frmIcon")
+                # movement button icons only: other icons (the hair tab's)
+                # get a widescreen x scale of 0.75 from the game, even lent out
+                elif (t and "FrmIcon_" in _name(raw)
                         and (_u32(dme, t + 0x08) >> 20) & 0xF == 0 and _u32(dme, t) & 0xF == 0):
                     donors.append(_Donor(p, window, t, struct.unpack_from(">I", raw, 0xE8)[0]))
                 if depth < 6:
@@ -300,8 +320,11 @@ class ZoneLockOverlay:
             boxes.append((x - w * sx / 2, y - h * sy / 2, x + w * sx / 2, y + h * sy / 2))
         if not boxes:
             return None
-        return (min(b[0] for b in boxes) - MARGIN, min(b[1] for b in boxes) - MARGIN,
-                max(b[2] for b in boxes) + MARGIN, max(b[3] for b in boxes) + MARGIN)
+        # relative to the group: grid pages other than the shown one wait
+        # 500 units below and slide in, so the window position is read live
+        gx, gy = panes[group][1], panes[group][2]
+        return (min(b[0] for b in boxes) - MARGIN - gx, min(b[1] for b in boxes) - MARGIN - gy,
+                max(b[2] for b in boxes) + MARGIN - gx, max(b[3] for b in boxes) + MARGIN - gy)
 
     # --- lending icons ------------------------------------------------------
 
@@ -314,6 +337,13 @@ class ZoneLockOverlay:
                 return True
             p = _u32(dme, p + 0x0C)
         return False
+
+    @staticmethod
+    def _centre(dme, zone: _Zone) -> bytes:
+        """Veil translation in window space, from the group's live position."""
+        gx, gy = _abs_pos(dme, zone.group, zone.window)
+        x0, y0, x1, y1 = zone.box
+        return struct.pack(">2f", gx + (x0 + x1) / 2, gy + (y0 + y1) / 2)
 
     def _lend(self, dme, zone: _Zone) -> bool:
         donor = next((d for d in self.donors
@@ -329,7 +359,7 @@ class ZoneLockOverlay:
         p, t = donor.pane, donor.texobj
         filt, size_bits, maddr = _u32(dme, t), _u32(dme, t + 0x08), _u32(dme, t + 0x0C)
         writes = [
-            (p + 0x2C, struct.pack(">2f", (x0 + x1) / 2, (y0 + y1) / 2)),
+            (p + 0x2C, self._centre(dme, zone)),
             (p + 0x44, struct.pack(">2f", 1.0, 1.0)),
             (p + 0x4C, struct.pack(">2f", width, height)),
             (p + 0xCD, b"\xff"),
@@ -375,6 +405,7 @@ class ZoneLockOverlay:
             if self.anchor is not None or self.scan_at != MEM2_LO:
                 # the panes are freed: the game must not move them any more
                 dme.write_bytes(VEIL_TABLE_ADDR, bytes(4 * VEIL_SLOTS))
+                dme.write_bytes(LOCKED_GROUP_TABLE_ADDR, bytes(4 * VEIL_SLOTS))
                 self.reset()
             return
         if self.anchor is None:
@@ -403,8 +434,15 @@ class ZoneLockOverlay:
                     wanted.append(zone)
         for zone in wanted:
             if zone.donor:
+                zone.donor.writes[0] = (zone.donor.pane + 0x2C, self._centre(dme, zone))
                 for addr, data in zone.donor.writes:
                     dme.write_bytes(addr, data)
             else:
                 self._lend(dme, zone)
+
+        table = b"".join(struct.pack(">I", z.group) for z in wanted[:VEIL_SLOTS])
+        table = table.ljust(4 * VEIL_SLOTS, b"\0")
+        if table != self.group_table:
+            dme.write_bytes(LOCKED_GROUP_TABLE_ADDR, table)
+            self.group_table = table
 
