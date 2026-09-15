@@ -1631,18 +1631,33 @@ class MiiChannelContext(CommonClient.CommonContext):
         word moves, and the layout objects exist only then."""
         if _dme is None:
             return
-        last_heartbeat = None
+        last_move = next_tick = 0.0
+        previous = None
         while not self.exit_event.is_set():
-            await asyncio.sleep(ZONE_LOCK_INTERVAL_SECONDS)
+            # 0.1 s steps: hovering brings the hovered group in front of the
+            # veils, keep_last puts them back before it shows for long.
+            await asyncio.sleep(0.1)
             if not self.server or not self.slot or not self._ensure_dme_hooked():
                 self.zone_locks.reset()
-                last_heartbeat = None
+                previous = None
                 continue
             try:
-                heartbeat = int.from_bytes(_dme.read_bytes(EDITOR_HEARTBEAT_ADDR, 4), "big")
-                editor_open = last_heartbeat is not None and heartbeat != last_heartbeat
-                last_heartbeat = heartbeat
-                self.zone_locks.tick(_dme, editor_open)
+                # Fresh proof before any write: the heartbeat moves ~120x/s
+                # while the editor is open, and the layout is freed as soon as
+                # it closes -- a stale "open" could write into freed panes.
+                # A single still sample only skips this step; forgetting the
+                # layout (and the icons lent out) waits for a whole second.
+                heartbeat = _dme.read_bytes(EDITOR_HEARTBEAT_ADDR, 4)
+                moving = previous is not None and heartbeat != previous
+                previous = heartbeat
+                now = time.monotonic()
+                if moving:
+                    last_move = now
+                    if now >= next_tick:
+                        next_tick = now + ZONE_LOCK_INTERVAL_SECONDS
+                        self.zone_locks.tick(_dme, True)
+                elif now - last_move > 1.0:
+                    self.zone_locks.tick(_dme, False)
             except Exception as e:
                 CommonClient.logger.debug(f"Editor zone padlocks: {e!r}")
                 self.zone_locks.reset()

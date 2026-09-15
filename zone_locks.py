@@ -1,37 +1,40 @@
-"""Locked zones of the Mii editor under a grey veil with one padlock
-(user request 2026-09-15: "une zone grisee, et le cadenas au dessus ... la
-zone peut reduire en fonction de ce qu'il reste reellement a debloquer et il
-faut mettre le cadenas qu'une fois").
+"""Locked zones of the Mii editor under a grey veil with one dark padlock
+(user requests 2026-09-15: "une zone grisee, et le cadenas au dessus ... il
+faut mettre le cadenas qu'une fois", "le cadenas fonce partout", and hovered
+items must not draw over it).
 
-No pane is created. For each locked zone (a grid page, a colour palette, a
-movement button block) one textured picture -- the host -- is stretched over
-the zone's bounding box and given our own texture: I4 64x64 in MEM1, a
-translucent veil with an opaque padlock and a clear keyhole. Texture
-coordinates beyond 0..1 keep the padlock square in the middle; the texture is
-clamped, so its veil border fills the rest.
+No pane is created. Each editor tab is a window; only the current tab's
+window is visible, the others are hidden (flag bit 0 clear, moved off
+screen). For each locked zone on screen (a grid page, a colour palette, a
+movement button block) the overlay borrows a simple icon picture from one of
+the HIDDEN windows -- a movement icon: I4 texture, coloured by its vertex
+colours, alpha = intensity, so the padlock is dark -- moves it to the end of
+the visible window's child list (drawn after everything in the window,
+hovered grid cells included), stretches it over the zone's bounding box and
+points it at our texture: a translucent veil with an opaque padlock and a
+clear keyhole, I4 64x64 in MEM1. Texture coordinates beyond 0..1 keep the
+padlock square in the middle; the texture is clamped, so its veil border
+fills the rest. Nothing of the visible tab is touched, and the icon goes back
+to its own window with its own values as soon as the zone unlocks or leaves
+the screen.
 
-The host has to be drawn after the zone's contents: the last textured picture
-of the zone's own group, or, for palettes (their cells are windows, with no
-usable picture), the first icon of the movement group, which the game draws
-after the palette. Only values inside the editor's own objects are written
-(no pointer changes hands, so freeing the layout is untouched), and they are
-put back as soon as the zone unlocks. The editor layout is rebuilt each time
-the editor opens, so everything is found again then.
+The lists are edited in an order that keeps every forward walk valid at each
+step (the game walks them while we write): unlink = prev.next first, then
+next.prev; link = the node's own links first, then tail.next, then
+sentinel.prev.
 
 nw4r lyt objects, as measured live in the channel (2026-09-15):
   pane      +0x00 vtable (0x8025c17c window, 0x8025c058 picture,
-            0x8025bfa8 null), +0x0C parent, +0x14 children list sentinel,
-            +0x28 material, +0x2C translate, +0x44 scale, +0x4C size,
-            +0x84 global matrix (row 0 first), +0xB4 name, +0xCD alpha,
-            +0xCF flags (bit 0 visible)
+            0x8025bfa8 null), +0x04 list node {next, prev} (nodes point at
+            node addresses), +0x0C parent, +0x10 child count, +0x14 children
+            sentinel node, +0x28 material, +0x2C translate, +0x44 scale,
+            +0x4C size, +0xB4 name, +0xCD alpha, +0xCF flags (bit 0 visible)
   picture   +0xD4 vertex colours x4, +0xE5 tex coord count, +0xE8 tex coords
             (4 x VEC2: TL, TR, BL, BR)
   material  +0x50 GX data counts (top nibble = texture maps), +0x58 GX data,
-            which starts with the GXTexObj: +0x08 fmt<<20 | (h-1)<<10 | (w-1),
+            which starts with the GXTexObj: +0x00 filter/wrap bits (low
+            nibble = wrap S/T, 0 = clamp), +0x08 fmt<<20 | (h-1)<<10 | (w-1),
             +0x0C image physical address >> 5, +0x14 format again
-The grid icons get their width corrected for widescreen by the game (global
-matrix x scale 0.75 against their parent): the host's width is divided by
-that ratio so the veil still covers the whole zone.
 """
 import struct
 from typing import Dict, List, Optional, Tuple
@@ -42,7 +45,13 @@ LOCK_BASE = 0x803C1600          # client lock bytes, bit n = page n unlocked
 LOCK_COUNT = 0x18
 TEX_ADDR = 0x803C9E00           # 0x800 bytes, next to the Gecko blocks
 TEX_BYTES = 0x800
-TEX_I4_64 = (63 << 10) | 63     # GXTexObj size bits: I4 (format 0), 64x64
+OLD_TEX_ADDRS = (0x803C9E00, 0x803CA600)   # anything pointing here is ours
+# Veils currently lent out, read by the Gecko block "Editor veils stay on
+# top" (Tools/ghidra_scripts/BuildVeilOnTop.java): whenever the game brings a
+# hovered element to the front of a list, it moves the veils of that same
+# list back to the end in the same frame. 8 pane pointers, 0 = empty.
+VEIL_TABLE_ADDR = 0x803CB100
+VEIL_SLOTS = 8
 WINDOW_VT = 0x8025C17C
 PICTURE_VT = 0x8025C058
 BOX_VTS = (WINDOW_VT, PICTURE_VT)
@@ -51,39 +60,37 @@ SCAN_CHUNK = 0x100000
 SCAN_CHUNKS_PER_TICK = 16
 ANCHOR_WINDOW = "windowMouth"   # any editor window; its parent is the root
 
-VEIL = 5                        # 0-15: strength of the grey veil
+VEIL = 5                        # 0-15: alpha of the veil
 PADLOCK_RGBA = bytes.fromhex("303030ff")
 MARGIN = 6.0                    # layout units around the zone's contents
 PADLOCK_MAX = 96.0
 PADLOCK_SHARE = 0.62            # of the zone's smaller side
 
-# window -> (zone group, lock byte, bit, host group or None). Grid pages are
-# frm*PrNull_NN with NN = page; single-page locks use bit 0 (the client
-# writes 0x01 / 0x00). A host group is only needed where the zone has no
-# picture of its own (palettes).
-ZONES: Dict[str, List[Tuple[str, int, int, Optional[str]]]] = {
-    "windowEye": [("frmEyePrNull_%02d" % i, 0x00, i, None) for i in range(4)]
-    + [("cpEyePrNull_00", 0x0B, 0, "editEFrmPrN_00"), ("editEFrmPrN_00", 0x0C, 0, None)],
-    "windowEyeB": [("frmEyeBPrNull_%02d" % i, 0x01, i, None) for i in range(2)]
-    + [("cpEyeBPrNull_00", 0x0D, 0, "editEBFrmPrN_00"), ("editEBFrmPrN_00", 0x0E, 0, None)],
-    "windowHair": [("frmHairPrNull_%02d" % i, 0x02, i, None) for i in range(6)],
-    "windowNose": [("frmNosePrNull_00", 0x03, 0, None), ("editNsFrmPrN_00", 0x10, 0, None)],
-    "windowMouth": [("frmMoutPrNull_%02d" % i, 0x04, i, None) for i in range(2)]
-    + [("cpMosePrNull_00", 0x11, 0, "editMFrmPrN_00"), ("editMFrmPrN_00", 0x12, 0, None)],
-    "windowFace": [("frmFacePrNull_00", 0x05, 0, None), ("frmFacePrNull_01", 0x05, 0, None),
-                   ("cpFacePrNull_00", 0x06, 0, "editFcFrmPrN_00")],
+# window -> (zone group, lock byte, bit). Grid pages are frm*PrNull_NN with
+# NN = page; single-page locks use bit 0 (the client writes 0x01 / 0x00).
+ZONES: Dict[str, List[Tuple[str, int, int]]] = {
+    "windowEye": [("frmEyePrNull_%02d" % i, 0x00, i) for i in range(4)]
+    + [("cpEyePrNull_00", 0x0B, 0), ("editEFrmPrN_00", 0x0C, 0)],
+    "windowEyeB": [("frmEyeBPrNull_%02d" % i, 0x01, i) for i in range(2)]
+    + [("cpEyeBPrNull_00", 0x0D, 0), ("editEBFrmPrN_00", 0x0E, 0)],
+    "windowHair": [("frmHairPrNull_%02d" % i, 0x02, i) for i in range(6)]
+    + [("cpHairPrNull_00", 0x0F, 0)],
+    "windowNose": [("frmNosePrNull_00", 0x03, 0), ("editNsFrmPrN_00", 0x10, 0)],
+    "windowMouth": [("frmMoutPrNull_%02d" % i, 0x04, i) for i in range(2)]
+    + [("cpMosePrNull_00", 0x11, 0), ("editMFrmPrN_00", 0x12, 0)],
+    "windowFace": [("frmFacePrNull_00", 0x05, 0), ("frmFacePrNull_01", 0x05, 0),
+                   ("cpFacePrNull_00", 0x06, 0)],
     # glasses / mustache / beard / mole share one window
-    "windowEtc": [("frmEtcPrNull_00", 0x07, 0, None), ("frmEtcPrNull_01", 0x08, 0, None),
-                  ("frmEtcPrNull_02", 0x09, 0, None), ("frmEtcPrNull_03", 0x0A, 0, None),
-                  ("cpEtcPrNull_00", 0x13, 0, "editEtFrmPrN_00"),
-                  ("cpEtcPrNull_01", 0x15, 0, "editEtFrmPrN_01"),
-                  ("editEtFrmPrN_00", 0x14, 0, None), ("editEtFrmPrN_01", 0x16, 0, None),
-                  ("editEtFrmPrN_02", 0x17, 0, None)],
+    "windowEtc": [("frmEtcPrNull_00", 0x07, 0), ("frmEtcPrNull_01", 0x08, 0),
+                  ("frmEtcPrNull_02", 0x09, 0), ("frmEtcPrNull_03", 0x0A, 0),
+                  ("cpEtcPrNull_00", 0x13, 0), ("cpEtcPrNull_01", 0x15, 0),
+                  ("editEtFrmPrN_00", 0x14, 0), ("editEtFrmPrN_01", 0x16, 0),
+                  ("editEtFrmPrN_02", 0x17, 0)],
 }
 
 
-def _texel(x: int, y: int) -> int:
-    """Padlock intensity at (x, y): 15 padlock, 0 keyhole, VEIL elsewhere."""
+def _alpha(x: int, y: int) -> int:
+    """Padlock texel at (x, y): 15 padlock, 0 keyhole, VEIL elsewhere."""
     if (x - 32) ** 2 + (y - 42) ** 2 <= 16 or (31 <= x <= 33 and 42 <= y <= 52):
         return 0
     if 10 <= x <= 54 and 31 <= y <= 59:
@@ -105,7 +112,7 @@ def padlock_texture() -> bytes:
         for bx in range(0, 64, 8):
             for y in range(by, by + 8):
                 for x in range(bx, bx + 8):
-                    nib.append(_texel(x, y))
+                    nib.append(_alpha(x, y))
     return bytes((nib[j] << 4) | nib[j + 1] for j in range(0, 4096, 2))
 
 
@@ -113,8 +120,8 @@ def _u32(dme, addr: int) -> int:
     return struct.unpack(">I", dme.read_bytes(addr, 4))[0]
 
 
-def _f32(dme, addr: int) -> float:
-    return struct.unpack(">f", dme.read_bytes(addr, 4))[0]
+def _w32(dme, addr: int, value: int) -> None:
+    dme.write_bytes(addr, struct.pack(">I", value & 0xFFFFFFFF))
 
 
 def _name(raw: bytes) -> str:
@@ -131,112 +138,59 @@ def _children(dme, pane: int):
         node = _u32(dme, node)
 
 
-def _abs_pos(dme, pane: int, window: int) -> Tuple[float, float]:
-    """Position of a pane's origin in window space (translations only)."""
-    x = y = 0.0
-    for _ in range(16):
-        if pane in (0, window):
-            break
-        tx, ty = struct.unpack(">2f", dme.read_bytes(pane + 0x2C, 8))
-        x, y = x + tx, y + ty
-        pane = _u32(dme, pane + 0x0C)
-    return x, y
+def _unlink(dme, pane: int, owner: int) -> None:
+    nxt, prv = struct.unpack(">2I", dme.read_bytes(pane + 4, 8))
+    _w32(dme, prv, nxt)                 # prev.next: forward walks skip it now
+    _w32(dme, nxt + 4, prv)             # next.prev
+    _w32(dme, owner + 0x10, _u32(dme, owner + 0x10) - 1)
 
 
-def _subtree(dme, group: int, gx: float, gy: float):
-    """[(addr, raw, x, y)] in draw order, positions in window space."""
-    items = []
-
-    def visit(p, ox, oy, depth):
-        raw = dme.read_bytes(p, 0xEC)
-        tx, ty = struct.unpack_from(">2f", raw, 0x2C)
-        x, y = (gx, gy) if depth == 0 else (ox + tx, oy + ty)
-        items.append((p, raw, x, y))
-        if depth < 6:
-            for c in _children(dme, p):
-                visit(c, x, y, depth + 1)
-
-    visit(group, 0.0, 0.0, 0)
-    return items
+def _link_after(dme, pane: int, owner: int, after: int) -> None:
+    node = pane + 4
+    nxt = _u32(dme, after)
+    _w32(dme, node, nxt)
+    _w32(dme, node + 4, after)
+    _w32(dme, pane + 0x0C, owner)
+    _w32(dme, after, node)              # forward walks include it from here
+    _w32(dme, nxt + 4, node)
+    _w32(dme, owner + 0x10, _u32(dme, owner + 0x10) + 1)
 
 
-def _textured_picture(dme, raw: bytes) -> bool:
+def _texobj(dme, raw: bytes) -> int:
+    """GXTexObj of a picture with a texture and tex coords, else 0."""
     if struct.unpack_from(">I", raw, 0)[0] != PICTURE_VT or raw[0xE5] < 1:
-        return False
+        return 0
     material = struct.unpack_from(">I", raw, 0x28)[0]
-    return bool(material) and bool((_u32(dme, material + 0x50) >> 28) & 0xF)
+    if not material or not (_u32(dme, material + 0x50) >> 28) & 0xF:
+        return 0
+    return _u32(dme, material + 0x58)
+
+
+def _is_ours(dme, texobj: int) -> bool:
+    low = _u32(dme, texobj + 0x0C) & 0x01FFFFFF
+    return low in {(a & 0x01FFFFFF) >> 5 for a in OLD_TEX_ADDRS}
 
 
 class _Zone:
-    def __init__(self, lock_byte: int, bit: int, writes, saved):
+    def __init__(self, window: int, group: int, lock_byte: int, bit: int, box):
+        self.window = window
+        self.group = group
         self.lock_byte = lock_byte
         self.bit = bit
-        self.writes = writes          # [(addr, bytes)] that draw the veil
-        self.saved = saved            # [(addr, bytes)] originals, None if unknown
-        self.applied = saved is None
+        self.box = box                # (x0, y0, x1, y1) in window space
+        self.donor: Optional["_Donor"] = None
 
 
-def _build_zone(dme, window: int, group: int, lock_byte: int, bit: int,
-                host_group: Optional[int]) -> Optional[_Zone]:
-    gx, gy = _abs_pos(dme, group, window)
-    items = _subtree(dme, group, gx, gy)
-
-    if host_group is None:
-        hosts = [it for it in reversed(items) if _textured_picture(dme, it[1])]
-    else:
-        hx, hy = _abs_pos(dme, host_group, window)
-        pictures = [it for it in _subtree(dme, host_group, hx, hy) if _textured_picture(dme, it[1])]
-        hosts = [it for it in pictures if "Icon" in _name(it[1])] or pictures
-    if not hosts:
-        return None
-    host, host_raw = hosts[0][0], hosts[0][1]
-    parent = struct.unpack_from(">I", host_raw, 0x0C)[0]
-    parent_x, parent_y = _abs_pos(dme, parent, window)
-
-    material = struct.unpack_from(">I", host_raw, 0x28)[0]
-    texobj = _u32(dme, material + 0x58)
-    coords = struct.unpack_from(">I", host_raw, 0xE8)[0]
-    size_bits, maddr = _u32(dme, texobj + 0x08), _u32(dme, texobj + 0x0C)
-    ours = (maddr & 0x01FFFFFF) == (TEX_ADDR & 0x01FFFFFF) >> 5
-
-    boxes = []
-    for p, raw, x, y in items[1:]:
-        if struct.unpack_from(">I", raw, 0)[0] not in BOX_VTS or (p == host and ours):
-            continue
-        sx, sy, w, h = struct.unpack_from(">4f", raw, 0x44)
-        boxes.append((x - w * sx / 2, y - h * sy / 2, x + w * sx / 2, y + h * sy / 2))
-    if not boxes:
-        return None
-    x0 = min(b[0] for b in boxes) - MARGIN
-    y0 = min(b[1] for b in boxes) - MARGIN
-    x1 = max(b[2] for b in boxes) + MARGIN
-    y1 = max(b[3] for b in boxes) + MARGIN
-    width, height = x1 - x0, y1 - y0
-    padlock = min(PADLOCK_MAX, PADLOCK_SHARE * min(width, height))
-    u, v = width / (2 * padlock), height / (2 * padlock)
-
-    # widescreen correction the game applies to some pictures (grid icons)
-    ratio = 1.0
-    parent_m00 = _f32(dme, parent + 0x84) if parent else 0.0
-    if parent_m00:                  # scale is ours only as 1.0, so the ratio stays valid
-        ratio = _f32(dme, host + 0x84) / parent_m00
-        if not 0.3 <= ratio <= 3.0 or abs(ratio - 1.0) < 0.02:
-            ratio = 1.0
-
-    writes = [
-        (host + 0x2C, struct.pack(">2f", (x0 + x1) / 2 - parent_x, (y0 + y1) / 2 - parent_y)),
-        (host + 0x44, struct.pack(">2f", 1.0, 1.0)),
-        (host + 0x4C, struct.pack(">2f", width / ratio, height)),
-        (host + 0xCD, b"\xff"),
-        (host + 0xD4, PADLOCK_RGBA * 4),
-        (texobj + 0x08, struct.pack(">I", (size_bits & 0xFF000000) | TEX_I4_64)),
-        (texobj + 0x0C, struct.pack(">I", (maddr & ~0x01FFFFFF) | (TEX_ADDR & 0x01FFFFFF) >> 5)),
-        (texobj + 0x14, struct.pack(">I", 0)),
-        (coords, struct.pack(">8f", 0.5 - u, 0.5 - v, 0.5 + u, 0.5 - v,
-                             0.5 - u, 0.5 + v, 0.5 + u, 0.5 + v)),
-    ]
-    saved = None if ours else [(addr, dme.read_bytes(addr, len(data))) for addr, data in writes]
-    return _Zone(lock_byte, bit, writes, saved)
+class _Donor:
+    def __init__(self, pane: int, window: int, texobj: int, coords: int):
+        self.pane = pane
+        self.window = window          # the hidden window it belongs to
+        self.texobj = texobj
+        self.coords = coords
+        self.parent = 0               # where it came from, while lent
+        self.prev_node = 0
+        self.saved: List[Tuple[int, bytes]] = []
+        self.slot = -1                # its entry in the veil table, while lent
 
 
 class ZoneLockOverlay:
@@ -248,14 +202,19 @@ class ZoneLockOverlay:
         self.reset()
 
     def reset(self) -> None:
+        """Forget the layout (it is gone or about to be): nothing is written back."""
         self.anchor: Optional[int] = None
         self.windows: List[Tuple[int, List[_Zone]]] = []
+        self.donors: List[_Donor] = []
+        self.lent: Dict[int, List[int]] = {}     # window -> lent icons, in list order
         self.scan_at = MEM2_LO
         self.ticks = 0
 
     def _log(self, msg: str) -> None:
         if self.logger:
             self.logger.debug(msg)
+
+    # --- finding the layout -------------------------------------------------
 
     def _scan_step(self, dme) -> None:
         key = ANCHOR_WINDOW.encode() + b"\0"
@@ -275,38 +234,147 @@ class ZoneLockOverlay:
                 i = chunk.find(key, i + 1)
 
     def _build(self, dme, anchor: int) -> None:
+        dme.write_bytes(VEIL_TABLE_ADDR, bytes(4 * VEIL_SLOTS))   # nothing lent yet
         root = _u32(dme, anchor + 0x0C)
-        windows, count, missing = [], 0, []
+        windows, donors, missing, stale = [], [], [], 0
         for window in _children(dme, root):
             zones_def = ZONES.get(_name(dme.read_bytes(window, 0xD0)))
             if not zones_def:
                 continue
+            panes: Dict[int, Tuple[bytes, float, float]] = {}   # pane -> (raw, x, y)
             by_name: Dict[str, int] = {}
-            stack = [window]
-            while stack:
-                p = stack.pop()
-                by_name.setdefault(_name(dme.read_bytes(p, 0xD0)), p)
-                stack.extend(_children(dme, p))
+            ours = set()
+
+            def visit(p, ox, oy, depth):
+                nonlocal stale
+                raw = dme.read_bytes(p, 0xEC)
+                tx, ty = struct.unpack_from(">2f", raw, 0x2C)
+                x, y = (0.0, 0.0) if depth == 0 else (ox + tx, oy + ty)
+                panes[p] = (raw, x, y)
+                by_name.setdefault(_name(raw), p)
+                t = _texobj(dme, raw)
+                if t and _is_ours(dme, t):
+                    # left over by an earlier run: some materials ignore the
+                    # pane alpha, a 0x0 quad draws nothing whatever the material
+                    dme.write_bytes(p + 0x4C, struct.pack(">2f", 0.0, 0.0))
+                    dme.write_bytes(p + 0xCD, b"\x00")
+                    ours.add(p)
+                    stale += 1
+                elif (t and "Icon" in _name(raw) and not _name(raw).startswith("frmIcon")
+                        and (_u32(dme, t + 0x08) >> 20) & 0xF == 0 and _u32(dme, t) & 0xF == 0):
+                    donors.append(_Donor(p, window, t, struct.unpack_from(">I", raw, 0xE8)[0]))
+                if depth < 6:
+                    for c in _children(dme, p):
+                        visit(c, x, y, depth + 1)
+
+            visit(window, 0.0, 0.0, 0)
+
             zones = []
-            for group_name, lock_byte, bit, host_name in zones_def:
+            for group_name, lock_byte, bit in zones_def:
                 group = by_name.get(group_name)
-                host_group = by_name.get(host_name) if host_name else None
-                zone = None
-                if group and (host_name is None or host_group):
-                    zone = _build_zone(dme, window, group, lock_byte, bit, host_group)
-                if zone:
-                    zones.append(zone)
+                box = self._box(dme, group, panes, ours) if group else None
+                if box:
+                    zones.append(_Zone(window, group, lock_byte, bit, box))
                 else:
                     missing.append(group_name)
             windows.append((window, zones))
-            count += len(zones)
-        self.anchor, self.windows = anchor, windows
-        self._log(f"Editor zone padlocks: {count} zones ready"
-                  + (f", none for {', '.join(missing)}" if missing else ""))
+        self.anchor, self.windows, self.donors = anchor, windows, donors
+        self._log(f"Editor zone padlocks: {sum(len(z) for _, z in windows)} zones, "
+                  f"{len(donors)} icons to lend"
+                  + (f", none for {', '.join(missing)}" if missing else "")
+                  + (f", {stale} stale veil(s) hidden" if stale else ""))
+
+    @staticmethod
+    def _box(dme, group: int, panes, ours) -> Optional[Tuple[float, float, float, float]]:
+        boxes = []
+        stack = list(_children(dme, group))
+        while stack:
+            p = stack.pop()
+            stack.extend(_children(dme, p))
+            if p not in panes or p in ours:
+                continue
+            raw, x, y = panes[p]
+            if struct.unpack_from(">I", raw, 0)[0] not in BOX_VTS:
+                continue
+            sx, sy, w, h = struct.unpack_from(">4f", raw, 0x44)
+            boxes.append((x - w * sx / 2, y - h * sy / 2, x + w * sx / 2, y + h * sy / 2))
+        if not boxes:
+            return None
+        return (min(b[0] for b in boxes) - MARGIN, min(b[1] for b in boxes) - MARGIN,
+                max(b[2] for b in boxes) + MARGIN, max(b[3] for b in boxes) + MARGIN)
+
+    # --- lending icons ------------------------------------------------------
+
+    def _shown(self, dme, zone: _Zone) -> bool:
+        p = zone.group
+        for _ in range(16):
+            if not dme.read_bytes(p + 0xCF, 1)[0] & 1:
+                return False
+            if p == zone.window:
+                return True
+            p = _u32(dme, p + 0x0C)
+        return False
+
+    def _lend(self, dme, zone: _Zone) -> bool:
+        donor = next((d for d in self.donors
+                      if d.window != zone.window and d.parent == 0), None)
+        used = {d.slot for d in self.donors}
+        slot = next((i for i in range(VEIL_SLOTS) if i not in used), None)
+        if donor is None or slot is None:
+            return False
+        x0, y0, x1, y1 = zone.box
+        width, height = x1 - x0, y1 - y0
+        padlock = min(PADLOCK_MAX, PADLOCK_SHARE * min(width, height))
+        u, v = width / (2 * padlock), height / (2 * padlock)
+        p, t = donor.pane, donor.texobj
+        filt, size_bits, maddr = _u32(dme, t), _u32(dme, t + 0x08), _u32(dme, t + 0x0C)
+        writes = [
+            (p + 0x2C, struct.pack(">2f", (x0 + x1) / 2, (y0 + y1) / 2)),
+            (p + 0x44, struct.pack(">2f", 1.0, 1.0)),
+            (p + 0x4C, struct.pack(">2f", width, height)),
+            (p + 0xCD, b"\xff"),
+            (p + 0xD4, PADLOCK_RGBA * 4),
+            (t + 0x00, struct.pack(">I", filt & ~0xF)),
+            (t + 0x08, struct.pack(">I", (size_bits & 0xFF000000) | (63 << 10) | 63)),
+            (t + 0x0C, struct.pack(">I", (maddr & ~0x01FFFFFF) | (TEX_ADDR & 0x01FFFFFF) >> 5)),
+            (donor.coords, struct.pack(">8f", 0.5 - u, 0.5 - v, 0.5 + u, 0.5 - v,
+                                       0.5 - u, 0.5 + v, 0.5 + u, 0.5 + v)),
+        ]
+        donor.saved = [(addr, dme.read_bytes(addr, len(data))) for addr, data in writes]
+        donor.parent = _u32(dme, p + 0x0C)
+        donor.prev_node = _u32(dme, p + 0x08)
+        # values first, while the icon is still in its hidden window
+        for addr, data in writes:
+            dme.write_bytes(addr, data)
+        _unlink(dme, p, donor.parent)
+        _link_after(dme, p, zone.window, _u32(dme, zone.window + 0x18))
+        donor.slot = slot
+        _w32(dme, VEIL_TABLE_ADDR + 4 * slot, p)   # the game keeps it last from now on
+        zone.donor = donor
+        donor.writes = writes
+        return True
+
+    def _give_back(self, dme, zone: _Zone) -> None:
+        donor = zone.donor
+        p = donor.pane
+        if donor.slot >= 0:                          # out of the game's hands first
+            _w32(dme, VEIL_TABLE_ADDR + 4 * donor.slot, 0)
+            donor.slot = -1
+        _unlink(dme, p, zone.window)
+        after = donor.prev_node
+        if after != donor.parent + 0x14 and _u32(dme, after - 4 + 0x0C) != donor.parent:
+            after = _u32(dme, donor.parent + 0x18)      # old neighbour moved: go last
+        _link_after(dme, p, donor.parent, after)
+        for addr, data in donor.saved:
+            dme.write_bytes(addr, data)
+        donor.parent = 0
+        zone.donor = None
 
     def tick(self, dme, editor_open: bool) -> None:
         if not editor_open:
             if self.anchor is not None or self.scan_at != MEM2_LO:
+                # the panes are freed: the game must not move them any more
+                dme.write_bytes(VEIL_TABLE_ADDR, bytes(4 * VEIL_SLOTS))
                 self.reset()
             return
         if self.anchor is None:
@@ -323,16 +391,20 @@ class ZoneLockOverlay:
         self.ticks += 1
 
         locks = dme.read_bytes(LOCK_BASE, LOCK_COUNT)
+        wanted = []
         for window, zones in self.windows:
-            visible = bool(dme.read_bytes(window + 0xCF, 1)[0] & 1)
+            window_shown = bool(dme.read_bytes(window + 0xCF, 1)[0] & 1)
             for zone in zones:
                 locked = not (locks[zone.lock_byte] >> zone.bit) & 1
-                if locked and (visible or not zone.applied):
-                    for addr, data in zone.writes:
-                        dme.write_bytes(addr, data)
-                    zone.applied = True
-                elif not locked and zone.applied:
-                    if zone.saved:
-                        for addr, data in zone.saved:
-                            dme.write_bytes(addr, data)
-                    zone.applied = False
+                want = locked and window_shown and self._shown(dme, zone)
+                if not want and zone.donor:
+                    self._give_back(dme, zone)       # free icons before lending any
+                elif want:
+                    wanted.append(zone)
+        for zone in wanted:
+            if zone.donor:
+                for addr, data in zone.donor.writes:
+                    dme.write_bytes(addr, data)
+            else:
+                self._lend(dme, zone)
+
