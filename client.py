@@ -730,6 +730,10 @@ class MiiChannelContext(CommonClient.CommonContext):
                 ),
             )
             rows = self._todo_rows_for(best[0], best[1])
+        elif self.target_miis:
+            rows = [("Create a Mii first", WC24_COLOR_HEADER,
+                     "No Mii yet\nCreate a Mii with New Mii, then drop\n"
+                     "it on the envelope to see what it\nstill has to match.", "OK", None)]
         else:
             return
         # The filler indexes by page*5 + row, so the whole list is written;

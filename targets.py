@@ -246,8 +246,14 @@ def assign_miis_to_targets(miis: List[Mii], targets: List[Dict[str, int]]) -> Di
     then slot, so the assignment is stable between polls rather than
     flip-flopping while the player edits.
 
-    Returns {target_index: mii} for the targets that have a Mii working on
-    them at all (score 0 pairings are left unassigned)."""
+    Miis that share nothing with any target then take the targets still
+    free, in order (target index, then slot). Targets avoid every
+    from-scratch value, so without this a new Mii was never assigned and
+    the envelope list had nothing to show (2026-09-15). A score-0 pairing
+    credits nothing, so checks are unaffected.
+
+    Returns {target_index: mii}; targets beyond the number of Miis stay
+    unassigned."""
     scored = [
         (match_score(mii, target), target_index, mii.slot, mii)
         for target_index, target in enumerate(targets)
@@ -262,6 +268,11 @@ def assign_miis_to_targets(miis: List[Mii], targets: List[Dict[str, int]]) -> Di
             continue
         assignment[target_index] = mii
         taken_slots.add(slot)
+
+    free_miis = sorted((m for m in miis if m.slot not in taken_slots), key=lambda m: m.slot)
+    free_targets = [i for i in range(len(targets)) if i not in assignment]
+    for target_index, mii in zip(free_targets, free_miis):
+        assignment[target_index] = mii
     return assignment
 
 
