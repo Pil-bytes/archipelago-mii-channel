@@ -9,7 +9,7 @@ mouth, glasses, mole, facial hair, hair, colours, body...). The editor's
 tools are locked until you receive the matching items, and the lock is real:
 Gecko code injected into the channel reverts a locked choice as you make it.
 
-The client reads your Mii database (`RFL_DB.dat`) and sends checks by itself
+The client reads the Mii database of Mii Channel Archipelago (`RFL_AP.dat`) and sends checks by itself
 as soon as a saved Mii matches. No clicking required.
 
 ## Required Software
@@ -143,7 +143,7 @@ saving; outside the editor it does nothing.
 
 ## Troubleshooting
 
-- **Nothing is checked**: the Mii Channel only writes `RFL_DB.dat` when it
+- **Nothing is checked**: the game only writes `RFL_AP.dat` when it
   saves -- leave the editor with "Save and quit".
 - **Envelope list empty, rows do nothing, "?" shows the game's controls**:
   the Gecko codes aren't loaded, or the client isn't running. Check the
