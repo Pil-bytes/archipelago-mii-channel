@@ -54,7 +54,6 @@ class QuitWithoutSavingTrapWeight(TrapWeight):
     the edit in progress is lost (waits for the editor if it isn't open).
     Being thrown out by it does not send a DeathLink."""
     display_name = "Quit Without Saving Trap Weight"
-    default = 0   # until the in-game effect is wired up
 
 
 class ToolJamTrapWeight(TrapWeight):
@@ -76,11 +75,34 @@ class GrowthSpurtTrapWeight(TrapWeight):
     display_name = "Growth Spurt Trap Weight"
 
 
-class BigHeadTrapWeight(TrapWeight):
-    """How often a trap is "Big Head": every Mii's head balloons for 30
-    seconds."""
-    display_name = "Big Head Trap Weight"
-    default = 0   # until the in-game effect is wired up
+class ShuffleTrapWeight(TrapWeight):
+    """How often a trap is "Shuffle": every value of one of your unfinished
+    Miis is re-rolled among the values you can already pick."""
+    display_name = "Shuffle Trap Weight"
+
+
+class MutationTrapWeight(TrapWeight):
+    """How often a trap is "Mutation": one value of one of your Miis changes,
+    finished Miis included (they lose their star until fixed)."""
+    display_name = "Mutation Trap Weight"
+
+
+class DefaultTrapWeight(TrapWeight):
+    """How often a trap is "Default": one of your unfinished Miis goes back
+    to a Mii made from scratch."""
+    display_name = "Default Trap Weight"
+
+
+class BlindfoldTrapWeight(TrapWeight):
+    """How often a trap is "Blindfold": the Mii you edit is invisible for 30
+    seconds (waits for the editor)."""
+    display_name = "Blindfold Trap Weight"
+
+
+class LockdownTrapWeight(TrapWeight):
+    """How often a trap is "Lockdown": every editor tool locks for 25 seconds
+    (waits for the editor)."""
+    display_name = "Lockdown Trap Weight"
 
 
 @dataclass
@@ -92,5 +114,9 @@ class MiiChannelOptions(PerGameCommonOptions):
     tool_jam_trap_weight: ToolJamTrapWeight
     paint_spill_trap_weight: PaintSpillTrapWeight
     growth_spurt_trap_weight: GrowthSpurtTrapWeight
-    big_head_trap_weight: BigHeadTrapWeight
+    shuffle_trap_weight: ShuffleTrapWeight
+    mutation_trap_weight: MutationTrapWeight
+    default_trap_weight: DefaultTrapWeight
+    blindfold_trap_weight: BlindfoldTrapWeight
+    lockdown_trap_weight: LockdownTrapWeight
     death_link: DeathLink

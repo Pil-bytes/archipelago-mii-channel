@@ -139,7 +139,11 @@ class MiiChannelWorld(World):
             "Tool Jam Trap": o.tool_jam_trap_weight.value,
             "Paint Spill Trap": o.paint_spill_trap_weight.value,
             "Growth Spurt Trap": o.growth_spurt_trap_weight.value,
-            "Big Head Trap": o.big_head_trap_weight.value,
+            "Shuffle Trap": o.shuffle_trap_weight.value,
+            "Mutation Trap": o.mutation_trap_weight.value,
+            "Default Trap": o.default_trap_weight.value,
+            "Blindfold Trap": o.blindfold_trap_weight.value,
+            "Lockdown Trap": o.lockdown_trap_weight.value,
         }
 
     def get_filler_item_name(self) -> str:

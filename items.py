@@ -120,7 +120,11 @@ TRAP_ITEMS = [
     "Tool Jam Trap",              # an unlocked tool locks again for a while
     "Paint Spill Trap",           # a random colour on one of your Miis
     "Growth Spurt Trap",          # random height and weight on one of your Miis
-    "Big Head Trap",              # every head balloons for a while
+    "Shuffle Trap",               # every value of an unfinished Mii re-rolled
+    "Mutation Trap",              # one value of any Mii changes, finished ones too
+    "Default Trap",               # an unfinished Mii back to a blank Mii
+    "Blindfold Trap",             # the Mii being edited is hidden for a while
+    "Lockdown Trap",              # every tool locks for a while
 ]
 for name in TRAP_ITEMS:
     item_table[name] = ItemData(_next_id, ItemClassification.trap)

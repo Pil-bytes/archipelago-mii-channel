@@ -948,6 +948,27 @@ def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
         os.fsync(fh.fileno())
 
 
+def write_mii_fields(path: str, slot: int, changes: Dict[str, int]) -> None:
+    """write_mii_field for several fields of one Mii at once: every word
+    patched, then a single CRC recompute (a trap re-rolls ~40 fields)."""
+    entry_offset = ENTRY_START + slot * ENTRY_SIZE
+    with open(path, "r+b") as fh:
+        for field_name, value in changes.items():
+            word_offset, word_bits, start_from_msb, width = FIELD_SPECS[field_name]
+            word_size = word_bits // 8
+            fh.seek(entry_offset + word_offset)
+            current = int.from_bytes(fh.read(word_size), "big")
+            fh.seek(entry_offset + word_offset)
+            fh.write(_pack_bits(current, word_bits, start_from_msb, width, value).to_bytes(word_size, "big"))
+        fh.flush()
+        fh.seek(0)
+        new_crc = crc16_ccitt(fh.read(CRC_OFFSET))
+        fh.seek(CRC_OFFSET)
+        fh.write(new_crc.to_bytes(2, "big"))
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
 def write_mii_name(path: str, slot: int, name: str) -> None:
     """Rename a single Mii slot in place (name bytes only, ID/face fields
     untouched), recomputing the CRC footer. Used to give a player's own Mii

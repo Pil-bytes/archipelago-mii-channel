@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import tempfile
+import struct
 import sys
 import time
 import urllib.parse
@@ -23,8 +24,9 @@ from .items import item_table, progressive_item_counts
 from .locations import location_name_to_id
 from .locks import find_violations, item_copies, palette_allowed_count, requirements_for
 from .items import TRAP_ITEMS
-from .traps import (JAM_TARGETS, TOOL_JAM_SECONDS, TrapState, growth_spurt, paint_spill,
-                    pick_victim, traps_done_key)
+from .traps import (BLINDFOLD_SECONDS, JAM_TARGETS, LOCKDOWN_SECONDS, TOOL_JAM_SECONDS, TrapState,
+                    defaults, growth_spurt, mutation, paint_spill, pick_victim, shuffle,
+                    traps_done_key)
 from .help_text import SCREEN_TEXTS
 from .zone_locks import INTERVAL_SECONDS as ZONE_LOCK_INTERVAL_SECONDS, ZoneLockOverlay
 
@@ -63,6 +65,7 @@ from .mii_reader import (
     find_dolphin_exe,
     find_mii_entries_by_name,
     find_rfl_db,
+    write_mii_fields,
     read_miis,
     read_wii_memory,
     remove_miis_by_name,
@@ -281,6 +284,24 @@ DEATH_LINK_ON_ADDR = 0x803CB248   # 1: that quit skips its confirmation
 FORCE_QUIT_ADDR = 0x803CB24C      # 1: the editor quits without saving, then 0
 DEATH_LINK_TEST_PATH = os.path.join(tempfile.gettempdir(), "mii_channel_death_link_test")
 
+# Blindfold Trap (live RE 2026-09-16). The game's character manager (pointer
+# at 0x803BD3A4, loaded from r13-0x717c) holds 110 character slots; its draw
+# functions (FUN_80007d2c / FUN_80007e0c) draw a character's head only when
+# character+0xCC equals the pass being drawn (0 or 1), so any other value
+# hides the head. The body is a nw4r g3d ScnMdl: character+0x118 holds four
+# of them, and bits 0x60 of their ScnObj flags (+0x9C) turn off their opaque
+# and translucent draws. In the editor, the only character is the Mii being
+# edited.
+CHARACTER_MANAGER_PTR_ADDR = 0x803BD3A4
+CHARACTER_SLOTS = 110
+CHARACTER_PASS_OFFSET = 0xCC
+CHARACTER_HIDDEN_PASS = 2
+CHARACTER_MODELS_OFFSET = 0x118
+CHARACTER_MODEL_COUNT = 4
+SCN_MDL_VTABLE = 0x8025BF60
+SCN_OBJ_FLAGS_OFFSET = 0x9C
+SCN_OBJ_NO_DRAW = 0x60
+
 # Editor heartbeat, bumped once per call of the hooked category-apply
 # function. A canary established that function fires ~120x/s while a Mii is
 # open in the editor and exactly 0 times anywhere else, so "this word is
@@ -495,6 +516,8 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.death_link_enabled = False
         self.death_quit_requested = False   # a DeathLink arrived, not applied yet
         self.trap_quit_pending = False      # a Quit Without Saving trap waits for the editor
+        self.blindfold_dirty = False        # the edited Mii may still be hidden
+        self.blindfold_passes: Dict[int, int] = {}   # character -> its draw pass before hiding
         self.quits_seen: Optional[int] = None
         self.selected_obj_addr: Optional[int] = None
         self.selected_mii_id: Optional[bytes] = None
@@ -1128,6 +1151,47 @@ class MiiChannelContext(CommonClient.CommonContext):
                 what = ", ".join(f"{field.replace(chr(95), chr(32))} {value}"
                                  for field, value in changes.items())
                 CommonClient.logger.info(f"{name}! {victim.name} now has {what}.")
+            elif name in ("Shuffle Trap", "Mutation Trap", "Default Trap"):
+                if not self.mii_db_path:
+                    continue
+                victim = pick_victim(rng, miis, protected, spare_finished=(name != "Mutation Trap"))
+                if victim is None:
+                    CommonClient.logger.info(f"{name}! ...but you have no Mii it can hit.")
+                    continue
+                if name == "Shuffle Trap":
+                    changes = shuffle(rng, self.progressive_counts)
+                    told = f"Shuffle Trap! Everything about {victim.name} got re-rolled."
+                elif name == "Default Trap":
+                    changes = defaults(victim)
+                    told = f"Default Trap! {victim.name} is a blank Mii again."
+                else:
+                    change = mutation(rng, victim, self.progressive_counts)
+                    if change is None:
+                        CommonClient.logger.info(f"Mutation Trap! ...but nothing about {victim.name} can change.")
+                        continue
+                    changes = dict([change])
+                    if victim.is_favorite:
+                        changes["is_favorite"] = 0     # not finished any more: its star goes
+                    told = (f"Mutation Trap! Something about {victim.name} mutated -- "
+                            f"your checks will tell you what.")
+                if changes:
+                    try:
+                        write_mii_fields(self.mii_db_path, victim.slot, changes)
+                    except Exception as e:
+                        CommonClient.logger.warning(f"{name}: could not change {victim.name}: {e!r}")
+                        continue
+                    self._mirror_fields_in_ram(victim.name, changes)
+                CommonClient.logger.info(told)
+            elif name == "Blindfold Trap":
+                self.traps.blindfold_pending = True
+                CommonClient.logger.info(
+                    f"Blindfold Trap! The Mii you edit vanishes for {int(BLINDFOLD_SECONDS)} seconds "
+                    "(now, or the next time you open the editor).")
+            elif name == "Lockdown Trap":
+                self.traps.lockdown_pending = True
+                CommonClient.logger.info(
+                    f"Lockdown Trap! Every tool locks for {int(LOCKDOWN_SECONDS)} seconds "
+                    "(now, or the next time you open the editor).")
             elif name == "Quit Without Saving Trap":
                 self.trap_quit_pending = True
                 CommonClient.logger.info(
@@ -1691,10 +1755,53 @@ class MiiChannelContext(CommonClient.CommonContext):
             for _ in range(quits - self.quits_seen):
                 if self.death_link_enabled:
                     Utils.async_start(self.send_death(f"{self.player_names.get(self.slot, 'A player')} "
-                                                      f"quit a Mii without saving. "
-                                                      f"They did it on purpose 100% trust."))
+                                                      f"walked out on their Mii without saving. "
+                                                      f"Totally on purpose, 100% trust."))
                     CommonClient.logger.info("You quit without saving: DeathLink sent.")
             self.quits_seen = quits
+
+    def _editor_traps_step(self, editor_open: bool) -> None:
+        """Every 0.1 s, with a fresh heartbeat: start the traps that wait for
+        the editor, and keep the edited Mii hidden while a Blindfold lasts.
+        Only written while the editor is open (its character is freed when it
+        closes); a Mii still hidden when the Blindfold ends is shown again."""
+        if not editor_open:
+            return
+        for name in self.traps.editor_opened():
+            CommonClient.logger.info(f"{name} starts now.")
+        hide = self.traps.blindfold_active()
+        if not hide and not self.blindfold_dirty:
+            return
+        manager = int.from_bytes(_dme.read_bytes(CHARACTER_MANAGER_PTR_ADDR, 4), "big")
+        if not 0x90000000 <= manager < 0x94000000:
+            return
+        slots = struct.unpack(f">{CHARACTER_SLOTS}I", _dme.read_bytes(manager, 4 * CHARACTER_SLOTS))
+        for character in slots:
+            if not 0x90000000 <= character < 0x94000000:
+                continue
+            pass_addr = character + CHARACTER_PASS_OFFSET
+            current = int.from_bytes(_dme.read_bytes(pass_addr, 4), "big")
+            if hide and current != CHARACTER_HIDDEN_PASS:
+                self.blindfold_passes[character] = current
+                _dme.write_bytes(pass_addr, CHARACTER_HIDDEN_PASS.to_bytes(4, "big"))
+            elif not hide and current == CHARACTER_HIDDEN_PASS:
+                _dme.write_bytes(pass_addr, self.blindfold_passes.get(character, 0).to_bytes(4, "big"))
+            models = struct.unpack(f">{CHARACTER_MODEL_COUNT}I",
+                                   _dme.read_bytes(character + CHARACTER_MODELS_OFFSET, 4 * CHARACTER_MODEL_COUNT))
+            for model in set(models):
+                if not (0x80000000 <= model < 0x81800000 or 0x90000000 <= model < 0x94000000):
+                    continue
+                if int.from_bytes(_dme.read_bytes(model, 4), "big") != SCN_MDL_VTABLE:
+                    continue
+                flags_addr = model + SCN_OBJ_FLAGS_OFFSET
+                flags = int.from_bytes(_dme.read_bytes(flags_addr, 4), "big")
+                wanted = flags | SCN_OBJ_NO_DRAW if hide else flags & ~SCN_OBJ_NO_DRAW
+                if wanted != flags:
+                    _dme.write_bytes(flags_addr, wanted.to_bytes(4, "big"))
+        if self.blindfold_dirty and not hide:
+            self.blindfold_passes.clear()
+            CommonClient.logger.info("Blindfold over: your Mii is back.")
+        self.blindfold_dirty = hide
 
     async def poll_zone_locks(self) -> None:
         """Grey veil and one padlock over each editor zone that is still
@@ -1724,6 +1831,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                 previous = heartbeat
                 now = time.monotonic()
                 self._death_link_step(moving)
+                self._editor_traps_step(moving)
                 if moving:
                     last_move = now
                     if now >= next_tick:

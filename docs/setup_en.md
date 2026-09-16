@@ -81,15 +81,33 @@ as soon as a saved Mii matches. No clicking required.
 `trap_percentage` (default 20) turns that share of the filler items into
 traps; each trap has its own weight option (0 disables it):
 
+- **Quit Without Saving**: the editor closes and your edit is lost (waits
+  for the editor). It does not send a DeathLink.
 - **Tool Jam**: one tool you already unlocked locks again for 60 seconds.
+- **Lockdown**: every editor tool locks for 25 seconds (waits for the editor).
+- **Blindfold**: the Mii you edit is invisible for 30 seconds (waits for the
+  editor).
 - **Paint Spill**: a random colour (hair, eyes, eyebrows, mouth, glasses,
   facial hair or favourite colour) lands on one of your Miis.
 - **Growth Spurt**: one of your Miis gets a random height and weight.
-- **Quit Without Saving** and **Big Head**: planned; their weight defaults
-  to 0 because the client cannot play them yet.
+- **Shuffle**: every value of one of your unfinished Miis is re-rolled among
+  the values you can already pick.
+- **Mutation**: one value of one of your Miis changes, finished Miis
+  included; a finished Mii loses its star until you fix it. The client does
+  not say what changed: your checks do.
+- **Default**: one of your unfinished Miis becomes a blank Mii again.
 
-Traps never touch the targets, and each one plays once: restarting the
-client does not replay traps you already received.
+A finished Mii is one that matches its target: it wears the favourite star,
+which only the client gives (the game's star buttons are blocked). Traps
+never touch the targets, and each one plays once: restarting the client does
+not replay traps you already received.
+
+## DeathLink
+
+With `death_link` on, "Quit without saving" becomes "Send DeathLink" and
+skips its confirmation: leaving a Mii without saving kills everyone linked.
+A death received while you edit a Mii throws you out of the editor without
+saving; outside the editor it does nothing.
 
 ## Client commands
 
