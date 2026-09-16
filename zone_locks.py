@@ -141,7 +141,12 @@ _INDEX = re.compile("_([0-9]+)$")
 
 
 def _alpha(x: int, y: int) -> int:
-    """Padlock texel at (x, y): 15 padlock, 0 keyhole, VEIL elsewhere."""
+    """Padlock texel at (x, y): 15 padlock, 0 keyhole, VEIL elsewhere.
+
+    The drawing below spans rows 15-59; it is read 5 rows lower so the
+    padlock sits in rows 10-54, centred on the texture (user 2026-09-16:
+    the padlock looked too low)."""
+    y += 5
     if (x - 32) ** 2 + (y - 42) ** 2 <= 16 or (31 <= x <= 33 and 42 <= y <= 52):
         return 0
     if 10 <= x <= 54 and 31 <= y <= 59:
@@ -167,9 +172,11 @@ def padlock_texture() -> bytes:
     return bytes((nib[j] << 4) | nib[j + 1] for j in range(0, 4096, 2))
 
 
-def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, bool]]:
-    """Rectangles covering exactly `boxes` (cell boxes), each with whether it
-    carries its group's padlock.
+def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, Rect, bool]]:
+    """Rectangles covering exactly `boxes` (cell boxes): each as (veil
+    rectangle with its margins, the cells it covers, whether it carries its
+    group's padlock). The padlock is centred on the cells, not on the margins,
+    which differ from side to side where rectangles meet.
 
     Runs of neighbouring cells in a row, runs stacked when they line up;
     rectangles that touch form a group with one padlock (on its biggest
@@ -222,7 +229,7 @@ def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, bool]]:
             if touching(rects[i], rects[j]):
                 group[find(i)] = find(j)
 
-    out: List[Tuple[Rect, bool]] = []
+    out: List[Tuple[Rect, Rect, bool]] = []
     best: Dict[int, int] = {}
     for i, r in enumerate(rects):
         g = find(i)
@@ -242,8 +249,8 @@ def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, bool]]:
                 bottom = (r[1] - s[3]) / 2
             if gap_x(r, s) < 0 and 0 <= s[1] - r[3] <= TOUCH:
                 top = (s[1] - r[3]) / 2
-        out.append(((r[0] - left, r[1] - bottom, r[2] + right, r[3] + top), best[find(i)] == i))
-    out.sort(key=lambda item: not item[1])
+        out.append(((r[0] - left, r[1] - bottom, r[2] + right, r[3] + top), tuple(r), best[find(i)] == i))
+    out.sort(key=lambda item: not item[2])
     return out
 
 
@@ -543,14 +550,17 @@ class ZoneLockOverlay:
         return False
 
     @staticmethod
-    def _veil_writes(dme, zone: _Zone, donor: _Donor, rect: Rect, padlock_on: bool):
+    def _veil_writes(dme, zone: _Zone, donor: _Donor, rect: Rect, core: Rect, padlock_on: bool):
         gx, gy = _abs_pos(dme, zone.group, zone.window)
         x0, y0, x1, y1 = rect[0] + gx, rect[1] + gy, rect[2] + gx, rect[3] + gy
         width, height = x1 - x0, y1 - y0
         if padlock_on:
             padlock = min(PADLOCK_MAX, PADLOCK_SHARE * min(width, height))
-            u, v = width / (2 * padlock), height / (2 * padlock)
-            coords = (0.5 - u, 0.5 - v, 0.5 + u, 0.5 - v, 0.5 - u, 0.5 + v, 0.5 + u, 0.5 + v)
+            # texture centre on the centre of the veiled cells; v runs downwards
+            cx, cy = (core[0] + core[2]) / 2 + gx, (core[1] + core[3]) / 2 + gy
+            u_left, u_right = 0.5 + (x0 - cx) / padlock, 0.5 + (x1 - cx) / padlock
+            v_top, v_bottom = 0.5 - (y1 - cy) / padlock, 0.5 - (y0 - cy) / padlock
+            coords = (u_left, v_top, u_right, v_top, u_left, v_bottom, u_right, v_bottom)
         else:
             # a corner of the texture, veil only
             coords = (0.02, 0.02, 0.10, 0.02, 0.02, 0.10, 0.10, 0.10)
@@ -643,7 +653,9 @@ class ZoneLockOverlay:
                     if len(rects) > MAX_VEILS_PER_ZONE:
                         box = (min(r[0][0] for r in rects), min(r[0][1] for r in rects),
                                max(r[0][2] for r in rects), max(r[0][3] for r in rects))
-                        rects = [(box, True)]
+                        core = (min(r[1][0] for r in rects), min(r[1][1] for r in rects),
+                                max(r[1][2] for r in rects), max(r[1][3] for r in rects))
+                        rects = [(box, core, True)]
                 # free what this zone no longer needs before anything is lent
                 while len(zone.donors) > len(rects):
                     self._give_back(dme, zone, zone.donors[-1])
@@ -652,11 +664,11 @@ class ZoneLockOverlay:
 
         locked_panes = []
         for zone, cells, rects in wanted:
-            for i, (rect, padlock_on) in enumerate(rects):
+            for i, (rect, core, padlock_on) in enumerate(rects):
                 donor = zone.donors[i] if i < len(zone.donors) else self._lend(dme, zone)
                 if donor is None:
                     break
-                for addr, data in self._veil_writes(dme, zone, donor, rect, padlock_on):
+                for addr, data in self._veil_writes(dme, zone, donor, rect, core, padlock_on):
                     dme.write_bytes(addr, data)
             # a whole veiled group can be named once; single cells one by one
             if len(cells) == len(zone.cells):
