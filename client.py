@@ -271,6 +271,8 @@ GLASSES_MOVEMENT_LOCK_BITMASK_ADDR = 0x803C1614
 FACIAL_HAIR_COLOR_LOCK_BITMASK_ADDR = 0x803C1615
 FACIAL_HAIR_MOVEMENT_LOCK_BITMASK_ADDR = 0x803C1616
 MOLE_MOVEMENT_LOCK_BITMASK_ADDR = 0x803C1617
+# Makeup marks got their own byte in trampoline V15 (they shared face shape's)
+FACIAL_FEATURE_LOCK_BITMASK_ADDR = 0x803C1618
 
 # Editor heartbeat, bumped once per call of the hooked category-apply
 # function. A canary established that function fires ~120x/s while a Mii is
@@ -1779,11 +1781,7 @@ class MiiChannelContext(CommonClient.CommonContext):
             # either item has arrived; the save-file layer applies the real
             # per-item limits a moment later (same coarser-ASM tradeoff as
             # every other partial unlock here).
-            face_shape_bitmask = (
-                0x01
-                if {"Face Shape Tool", "Makeup Kit"} & self.unlocked_items
-                else 0x00
-            )
+            face_shape_bitmask = _count("Face Shape Tool", "face_shape")
             skin_tone_bitmask = _count("Skin Tone Palette", "skin_color")
             glasses_bitmask = _count("Glasses Case", "glasses_type")
             mole_bitmask = _count("Mole Marker", "mole_enabled")
@@ -1824,6 +1822,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                 (NOSE_LOCK_BITMASK_ADDR, nose_bitmask, "nose"),
                 (MOUTH_LOCK_BITMASK_ADDR, mouth_bitmask, "mouth"),
                 (FACE_SHAPE_LOCK_BITMASK_ADDR, face_shape_bitmask, "face shape"),
+                (FACIAL_FEATURE_LOCK_BITMASK_ADDR, _count("Makeup Kit", "facial_feature"), "makeup"),
                 (SKIN_TONE_LOCK_BITMASK_ADDR, skin_tone_bitmask, "skin tone"),
                 (GLASSES_LOCK_BITMASK_ADDR, glasses_bitmask, "glasses"),
                 (MUSTACHE_LOCK_BITMASK_ADDR, _count("Facial Hair Kit", "mustache_type"), "mustache"),

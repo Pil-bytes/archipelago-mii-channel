@@ -68,7 +68,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 INTERVAL_SECONDS = 0.5
 
 LOCK_BASE = 0x803C1600          # client lock bytes (page bitmask, or a count)
-LOCK_COUNT = 0x18
+LOCK_COUNT = 0x19
 TEX_ADDR = 0x803C9E00           # 0x800 bytes, next to the Gecko blocks
 TEX_BYTES = 0x800
 OLD_TEX_ADDRS = (0x803C9E00, 0x803CA600)   # anything pointing here is ours
@@ -111,9 +111,9 @@ ZONES: Dict[str, List[Tuple[str, int, str, Optional[int]]]] = {
     "windowNose": [("frmNosePrNull_00", 0x03, COUNT, 1), ("editNsFrmPrN_00", 0x10, FLAG, None)],
     "windowMouth": [("frmMoutPrNull_%02d" % i, 0x04, PAGE, i) for i in range(2)]
     + [("cpMosePrNull_00", 0x11, COUNT, 0), ("editMFrmPrN_00", 0x12, FLAG, None)],
-    # face shape and the makeup marks share one lock byte in the trampoline,
-    # so both grids open and close together
-    "windowFace": [("frmFacePrNull_00", 0x05, FLAG, None), ("frmFacePrNull_01", 0x05, FLAG, None),
+    # face shape (_00, 8 cells) and the makeup marks (_01, 12 cells) are two
+    # items with two counted bytes since trampoline V15
+    "windowFace": [("frmFacePrNull_00", 0x05, COUNT, 0), ("frmFacePrNull_01", 0x18, COUNT, 0),
                    ("cpFacePrNull_00", 0x06, COUNT, 0)],
     # glasses / moustache / mole / beard share one window. Measured live:
     # _00 glasses (cells 00-11), _01 moustache (12-15), _02 the mole's two
