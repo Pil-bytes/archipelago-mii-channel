@@ -67,12 +67,12 @@ SCREEN_TEXTS: Dict[str, str] = {
     # Wii Friend -> the Archipelago checklist
     "0000057": "See what a Mii still has to match\nfor its target, and ask for hints.",
     "0000034": (
-        "Grab a Mii (A+B), drop it on the\n"
-        "envelope: it lists what it must\n"
-        "still match. Click a check's name\n"
-        "to see your progress and its hint.\n"
+        "Drop a Mii (A+B) on the envelope:\n"
+        "click a check for progress and hint.\n"
         "Grey-red locked, white doable,\n"
-        "blue hinted, green sent, orange lost."
+        "dark blue doable+hinted, blue hinted,\n"
+        "yellow unlock located, green sent,\n"
+        "orange sent, then lost."
     ),
     "0101600": "Click a check for progress and\na hint, the header for colours.",
     # Erase
