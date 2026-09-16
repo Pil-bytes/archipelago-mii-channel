@@ -200,8 +200,10 @@ def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, Rect, bool]]:
     rects: List[List[float]] = []
     for r in runs:
         for s in rects:
-            if abs(s[0] - r[0]) < 1 and abs(s[2] - r[2]) < 1 and \
+            if abs(s[0] - r[0]) < TOUCH and abs(s[2] - r[2]) < TOUCH and \
                     min(abs(s[1] - r[3]), abs(r[1] - s[3])) <= TOUCH:
+                # rows of slightly different widths (buttons) still stack
+                s[0], s[2] = min(s[0], r[0]), max(s[2], r[2])
                 s[1], s[3] = min(s[1], r[1]), max(s[3], r[3])
                 break
         else:
@@ -214,7 +216,7 @@ def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, Rect, bool]]:
         return max(a[1], b[1]) - min(a[3], b[3])
 
     def touching(a, b):
-        return (gap_x(a, b) <= TOUCH and gap_y(a, b) < 0) or (gap_y(a, b) <= TOUCH and gap_x(a, b) < 0)
+        return ((-TOUCH <= gap_x(a, b) <= TOUCH and gap_y(a, b) < 0) or (-TOUCH <= gap_y(a, b) <= TOUCH and gap_x(a, b) < 0))
 
     group = list(range(len(rects)))
 
@@ -241,13 +243,17 @@ def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, Rect, bool]]:
         for j, s in enumerate(rects):
             if j == i or find(j) != find(i):
                 continue
-            if gap_y(r, s) < 0 and 0 <= r[0] - s[2] <= TOUCH:
+            # neighbours meet in the middle of the gap -- or of the overlap
+            # when the cells overlap a little: never both margins
+            left_of = (s[0] + s[2]) < (r[0] + r[2])
+            below = (s[1] + s[3]) < (r[1] + r[3])
+            if gap_y(r, s) < 0 and left_of and -TOUCH <= r[0] - s[2] <= TOUCH:
                 left = (r[0] - s[2]) / 2
-            if gap_y(r, s) < 0 and 0 <= s[0] - r[2] <= TOUCH:
+            if gap_y(r, s) < 0 and not left_of and -TOUCH <= s[0] - r[2] <= TOUCH:
                 right = (s[0] - r[2]) / 2
-            if gap_x(r, s) < 0 and 0 <= r[1] - s[3] <= TOUCH:
+            if gap_x(r, s) < 0 and below and -TOUCH <= r[1] - s[3] <= TOUCH:
                 bottom = (r[1] - s[3]) / 2
-            if gap_x(r, s) < 0 and 0 <= s[1] - r[3] <= TOUCH:
+            if gap_x(r, s) < 0 and not below and -TOUCH <= s[1] - r[3] <= TOUCH:
                 top = (s[1] - r[3]) / 2
         out.append(((r[0] - left, r[1] - bottom, r[2] + right, r[3] + top), tuple(r), best[find(i)] == i))
     out.sort(key=lambda item: not item[2])
@@ -649,7 +655,14 @@ class ZoneLockOverlay:
                 cells = zone.locked_cells(locks[zone.lock]) if window_shown else []
                 rects = []
                 if cells and self._shown(dme, zone):
-                    rects = veil_rects([c[2] for c in cells])
+                    boxes = [c[2] for c in cells]
+                    if len(cells) == len(zone.cells):
+                        # the whole zone is locked: one rectangle, whatever the
+                        # buttons' shapes (user 2026-09-16: two overlapping
+                        # veils on the mole's movement block)
+                        boxes = [(min(b[0] for b in boxes), min(b[1] for b in boxes),
+                                  max(b[2] for b in boxes), max(b[3] for b in boxes))]
+                    rects = veil_rects(boxes)
                     if len(rects) > MAX_VEILS_PER_ZONE:
                         box = (min(r[0][0] for r in rects), min(r[0][1] for r in rects),
                                max(r[0][2] for r in rects), max(r[0][3] for r in rects))
