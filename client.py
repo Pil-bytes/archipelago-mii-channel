@@ -307,6 +307,8 @@ SCN_OBJ_NO_DRAW = 0x60
 # the Plaza's next frame reloads the actor with that slot the way the game's
 # own favourite button does, and writes 0 back.
 MII_REFRESH_REQUEST_ADDR = 0x803CB3F0
+MII_REFRESH_CODE_ADDR = 0x803CB400
+MII_REFRESH_CODE_WORD = bytes.fromhex("9421FF80")
 
 # Editor heartbeat, bumped once per call of the hooked category-apply
 # function. A canary established that function fires ~120x/s while a Mii is
@@ -524,6 +526,8 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.trap_quit_pending = False      # a Quit Without Saving trap waits for the editor
         self.blindfold_dirty = False        # the edited Mii may still be hidden
         self.refresh_slots: List[int] = []  # Plaza Miis to reload on screen
+        self.mem2_ok = False                # MEM2 seen correctly since the last hook
+        self.mem2_checked_at = 0.0
         self.blindfold_passes: Dict[int, int] = {}   # character -> its draw pass before hiding
         self.quits_seen: Optional[int] = None
         self.selected_obj_addr: Optional[int] = None
@@ -675,7 +679,31 @@ class MiiChannelContext(CommonClient.CommonContext):
                 _dme.hook()
             except Exception:
                 pass
+            self.mem2_ok = False
+        if _dme.is_hooked() and not self.mem2_ok and now - self.mem2_checked_at >= 5.0:
+            self.mem2_checked_at = now
+            self._check_mem2()
         return _dme.is_hooked()
+
+    def _check_mem2(self) -> None:
+        """A hook taken while Dolphin is still starting sees MEM2 wrong for
+        good: reads there return other bytes, no error (seen 2026-09-16: the
+        Mii database was invisible, so no trap reached the running game).
+        Once the game runs (our Gecko code is in place), the database header
+        must be in MEM2; if it is not, hook again."""
+        try:
+            if _dme.read_bytes(MII_REFRESH_CODE_ADDR, 4) != MII_REFRESH_CODE_WORD:
+                return                          # game not running yet
+            if _dme.read_bytes(0x90000000, 0x4000000).find(b"RNOD") != -1:
+                self.mem2_ok = True
+                return
+        except Exception:
+            pass
+        CommonClient.logger.debug("Dolphin's MEM2 is not readable yet -- hooking again.")
+        try:
+            _dme.un_hook()
+        except Exception:
+            pass
 
     def _dolphin_is_running(self) -> bool:
         try:
