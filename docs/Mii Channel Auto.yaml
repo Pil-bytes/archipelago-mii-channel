@@ -1,0 +1,157 @@
+# Mii Channel Auto -- player options (v1.0)
+# Weighted options: the higher the number next to a value, the more likely it
+# is picked. Check the file at https://archipelago.gg/check if unsure.
+
+name: Player{number}
+
+description: Mii Channel Auto
+
+game: Mii Channel Auto
+requires:
+  version: 0.6.7
+  game:
+    Mii Channel Auto: 1.0.0
+
+Mii Channel Auto:
+  ################
+  # Game Options #
+  ################
+  progression_balancing:
+    normal: 50
+    disabled: 0
+    extreme: 0
+
+  accessibility:
+    full: 50
+    minimal: 0
+
+  miis_required:
+    # How many real Miis you need to have created (in RFL_DB.dat) for the "Create
+    # N Miis" milestone checks.
+    # Range: 5-100, default 10
+    10: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  target_count:
+    # How many target Miis you have to recreate. Each target gives 27 checks: one
+    # per face category (25, from face shape to favourite colour), one for height
+    # and weight, and "Perfect Copy" for a single Mii matching all of it. "Become
+    # a Mii Master" needs every check of every target.
+    # Range: 5-20, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  trap_percentage:
+    # Percentage of the filler items ("Nothing") replaced by traps. 0 turns traps
+    # off.
+    # Range: 0-100, default 20
+    20: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  quit_without_saving_trap_weight:
+    # How often a trap is "Quit Without Saving": the Mii editor closes and the
+    # edit in progress is lost (waits for the editor if it isn't open). Being
+    # thrown out by it does not send a DeathLink.
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  tool_jam_trap_weight:
+    # How often a trap is "Tool Jam": one tool you already unlocked locks again
+    # for 60 seconds.
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  paint_spill_trap_weight:
+    # How often a trap is "Paint Spill": a random colour (hair, eyes, eyebrows,
+    # mouth, glasses, facial hair or favourite colour) lands on one of your Miis.
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  growth_spurt_trap_weight:
+    # How often a trap is "Growth Spurt": one of your Miis gets a random height
+    # and weight.
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  shuffle_trap_weight:
+    # How often a trap is "Shuffle": every value of one of your unfinished Miis is
+    # re-rolled among the values you can already pick.
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  mutation_trap_weight:
+    # How often a trap is "Mutation": one value of one of your Miis changes,
+    # finished Miis included (they lose their star until fixed).
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  default_trap_weight:
+    # How often a trap is "Default": one of your unfinished Miis goes back to a
+    # Mii made from scratch.
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  blindfold_trap_weight:
+    # How often a trap is "Blindfold": the Mii you edit is invisible for 30
+    # seconds (waits for the editor).
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  lockdown_trap_weight:
+    # How often a trap is "Lockdown": every editor tool locks for 25 seconds
+    # (waits for the editor).
+    # Range: 0-10, default 5
+    5: 50
+    random: 0
+    random-low: 0
+    random-high: 0
+
+  death_link:
+    # When you quit a Mii without saving (the button becomes "Send DeathLink"),
+    # everyone with DeathLink dies; a death received while you edit a Mii throws
+    # you out of the editor without saving.
+    false: 50
+    true: 0
+
+  ###########################
+  # Item & Location Options #
+  ###########################
+  local_items: []
+  non_local_items: []
+  start_inventory: {}
+  start_hints: []
+  start_location_hints: []
+  exclude_locations: []
+  priority_locations: []
+  item_links: []
+  plando_items: []

@@ -1,4 +1,4 @@
-# Mii Channel Auto Setup Guide (v0.4)
+# Mii Channel Auto Setup Guide (v1.0)
 
 ## What this is
 
@@ -26,10 +26,11 @@ as soon as a saved Mii matches. No clicking required.
 2. Copy `gecko/HACA01.ini` from this repository into your Dolphin user
    folder's `GameSettings\` directory.
 3. In Dolphin: *Config > General > Enable Cheats*. Then right-click the Mii
-   Channel > Properties > Gecko Codes and check that the four "Mii Channel"
-   / "Mii Editor" codes are ticked. Gecko codes load when the game boots, so
-   restart the channel after changing them.
-4. Generate a YAML for "Mii Channel Auto" and include it in your multiworld.
+   Channel > Properties > Gecko Codes and check that all eleven codes of the
+   file are ticked. Gecko codes load when the game boots, so restart the
+   channel after changing them.
+4. Fill in `docs/Mii Channel Auto.yaml` (every option is explained in it) and
+   include it in your multiworld.
 
 ## Joining a MultiWorld Game
 

@@ -16,15 +16,10 @@ class MiisRequired(Range):
 
 class TargetCount(Range):
     """
-    How many random target Miis you must try to recreate exactly. Each
-    target adds up to 10 checks (one per matching face-part category, plus
-    one for matching height+weight), so raising this significantly increases
-    the total number of checks in this world. You reach "Become a Mii
-    Master" once every check for every target has been completed.
-
-    Minimum is 5 (not 1) because the gating items alone (progressive page
-    unlocks plus separate color/movement unlocks per category) need at
-    least that many target-driven checks to have somewhere to go.
+    How many target Miis you have to recreate. Each target gives 27 checks:
+    one per face category (25, from face shape to favourite colour), one for
+    height and weight, and "Perfect Copy" for a single Mii matching all of it.
+    "Become a Mii Master" needs every check of every target.
     """
     display_name = "Number of Target Miis"
     range_start = 5
