@@ -192,4 +192,5 @@ class MiiChannelWorld(World):
         return {
             "miis_required": self.options.miis_required.value,
             "target_miis": self.target_miis,
+            "death_link": self.options.death_link.value,
         }

@@ -274,6 +274,13 @@ MOLE_MOVEMENT_LOCK_BITMASK_ADDR = 0x803C1617
 # Makeup marks got their own byte in trampoline V15 (they shared face shape's)
 FACIAL_FEATURE_LOCK_BITMASK_ADDR = 0x803C1618
 
+# DeathLink / Quit Without Saving (Gecko block "DeathLink and quit without
+# saving", Tools/ghidra_scripts/BuildDeathLink.java):
+QUITS_MADE_ADDR = 0x803CB244      # +1 each time the PLAYER quits without saving
+DEATH_LINK_ON_ADDR = 0x803CB248   # 1: that quit skips its confirmation
+FORCE_QUIT_ADDR = 0x803CB24C      # 1: the editor quits without saving, then 0
+DEATH_LINK_TEST_PATH = os.path.join(tempfile.gettempdir(), "mii_channel_death_link_test")
+
 # Editor heartbeat, bumped once per call of the hooked category-apply
 # function. A canary established that function fires ~120x/s while a Mii is
 # open in the editor and exactly 0 times anywhere else, so "this word is
@@ -503,6 +510,10 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.editor_was_open = False
         # grey veil + padlock over the editor zones still locked (zone_locks.py)
         self.zone_locks = ZoneLockOverlay(CommonClient.logger)
+        self.death_link_enabled = False
+        self.death_quit_requested = False   # a DeathLink arrived, not applied yet
+        self.trap_quit_pending = False      # a Quit Without Saving trap waits for the editor
+        self.quits_seen: Optional[int] = None
         self.selected_obj_addr: Optional[int] = None
         self.selected_mii_id: Optional[bytes] = None
         self.last_selected_scan = 0.0
@@ -572,6 +583,15 @@ class MiiChannelContext(CommonClient.CommonContext):
             slot_data: Dict[str, Any] = args.get("slot_data") or {}
             self.miis_required = slot_data.get("miis_required", 10)
             self.target_miis = slot_data.get("target_miis", [])
+            self.death_link_enabled = bool(slot_data.get("death_link", 0))
+            if os.path.exists(DEATH_LINK_TEST_PATH):
+                # local test switch: DeathLink without generating a new seed
+                self.death_link_enabled = True
+                CommonClient.logger.warning(f"TEST MODE: DeathLink forced on by {DEATH_LINK_TEST_PATH}")
+            if self.death_link_enabled:
+                Utils.async_start(self.update_death_link(True))
+                # the menu button that now kills everyone says so
+                SCREEN_TEXTS["0000026"] = "Send DeathLink"
 
             CommonClient.logger.info(
                 f"{len(self.target_miis)} target Mii(s) loaded. They appear in the Mii Parade as "
@@ -1126,6 +1146,11 @@ class MiiChannelContext(CommonClient.CommonContext):
                 what = ", ".join(f"{field.replace(chr(95), chr(32))} {value}"
                                  for field, value in changes.items())
                 CommonClient.logger.info(f"{name}! {victim.name} now has {what}.")
+            elif name == "Quit Without Saving Trap":
+                self.trap_quit_pending = True
+                CommonClient.logger.info(
+                    "Quit Without Saving Trap! The Mii you edit is left without saving "
+                    "(now, or the next time you open the editor).")
             else:
                 CommonClient.logger.info(f"{name} received -- this client can't play it yet.")
 
@@ -1646,6 +1671,48 @@ class MiiChannelContext(CommonClient.CommonContext):
         except Exception as e:
             CommonClient.logger.debug(f"Restore-value snapshot failed (will retry): {e!r}")
 
+    def on_deathlink(self, data: Dict[str, Any]) -> None:
+        super().on_deathlink(data)
+        if self.death_link_enabled:
+            self.death_quit_requested = True
+
+    def _death_link_step(self, editor_open: bool) -> None:
+        """Every 0.1 s, with a fresh heartbeat: publish the DeathLink switch,
+        apply a received death or a Quit Without Saving trap, and send a death
+        for every quit without saving the player made (the Gecko block only
+        counts those -- a quit forced from here never is, so deaths do not
+        bounce back and forth)."""
+        _dme.write_bytes(DEATH_LINK_ON_ADDR, bytes([1 if self.death_link_enabled else 0]))
+        if editor_open:
+            if self.death_quit_requested:
+                self.death_quit_requested = False
+                _dme.write_bytes(FORCE_QUIT_ADDR, bytes([1]))
+                CommonClient.logger.info("DeathLink! Your Mii is left without saving.")
+            if self.trap_quit_pending:
+                self.trap_quit_pending = False
+                _dme.write_bytes(FORCE_QUIT_ADDR, bytes([1]))
+                CommonClient.logger.info("Quit Without Saving Trap! Your Mii is left without saving.")
+        elif self.death_quit_requested:
+            self.death_quit_requested = False   # nothing to lose outside the editor
+            CommonClient.logger.info("DeathLink received outside the editor: nothing happens.")
+
+        quits = int.from_bytes(_dme.read_bytes(QUITS_MADE_ADDR, 4), "big")
+        if self.quits_seen is None:
+            # The counter only moves inside the editor. Before the game runs,
+            # this memory holds whatever the boot left there, and a reference
+            # taken then sent a death as soon as the game cleared it.
+            if editor_open:
+                self.quits_seen = quits
+        elif quits < self.quits_seen:
+            self.quits_seen = quits             # Dolphin restarted
+        elif quits > self.quits_seen:
+            for _ in range(quits - self.quits_seen):
+                if self.death_link_enabled:
+                    Utils.async_start(self.send_death(f"{self.player_names.get(self.slot, 'A player')} "
+                                                      f"quit a Mii without saving."))
+                    CommonClient.logger.info("You quit without saving: DeathLink sent.")
+            self.quits_seen = quits
+
     async def poll_zone_locks(self) -> None:
         """Grey veil and one padlock over each editor zone that is still
         locked, driven by the lock bytes poll_asm_lock_bitmask writes (so a
@@ -1673,6 +1740,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                 moving = previous is not None and heartbeat != previous
                 previous = heartbeat
                 now = time.monotonic()
+                self._death_link_step(moving)
                 if moving:
                     last_move = now
                     if now >= next_tick:

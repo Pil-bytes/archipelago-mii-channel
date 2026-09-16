@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from Options import Range, PerGameCommonOptions
+from Options import DeathLink, Range, PerGameCommonOptions
 
 
 class MiisRequired(Range):
@@ -51,7 +51,8 @@ class TrapWeight(Range):
 
 class QuitWithoutSavingTrapWeight(TrapWeight):
     """How often a trap is "Quit Without Saving": the Mii editor closes and
-    the edit in progress is lost (waits for the editor if it isn't open)."""
+    the edit in progress is lost (waits for the editor if it isn't open).
+    Being thrown out by it does not send a DeathLink."""
     display_name = "Quit Without Saving Trap Weight"
     default = 0   # until the in-game effect is wired up
 
@@ -92,3 +93,4 @@ class MiiChannelOptions(PerGameCommonOptions):
     paint_spill_trap_weight: PaintSpillTrapWeight
     growth_spurt_trap_weight: GrowthSpurtTrapWeight
     big_head_trap_weight: BigHeadTrapWeight
+    death_link: DeathLink
