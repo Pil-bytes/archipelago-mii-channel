@@ -46,7 +46,10 @@ Cheats" setting are installed by the client.
    Archipelago into your Dolphin (a few seconds).
 3. It writes the targets into the **Mii Parade**, then starts Dolphin on Mii
    Channel Archipelago by itself. Leave the client running while you play.
-   (Starting it yourself: the title is `0001000248415058`, shown as "HAPX".)
+   Dolphin's game list only shows game files, never installed channels (the
+   real Mii Channel isn't there either): start it from the client, or from
+   *Tools > Load Wii System Menu*, where it is called "Mii Channel AP --
+   Nintendo / Pil_Bandit". Its title id is `0001000248415058` ("HAPX").
 
 Settings live in Archipelago's `host.yaml`, under `mii_channel_auto_options`:
 `dolphin_path` (Dolphin.exe) and `dolphin_user_folder` (your Dolphin user

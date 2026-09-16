@@ -34,7 +34,14 @@ TITLE_ID = TITLE_HIGH + TITLE_LOW
 GAME_ID = "HAPX01"   # HAPX: in no title database (HCAP was a real channel)
 DB_PATH = b"/shared2/menu/FaceLib/RFL_DB.dat"
 AP_DB_PATH = b"/shared2/menu/FaceLib/RFL_AP.dat"   # same length: patched in place
-PATCH_VERSION = "1"                                # bump when the patch changes
+PATCH_VERSION = "2"                                # bump when the patch changes
+# Banner name, every language (user 2026-09-16). IMET holds one name of 42
+# UTF-16 characters per language: two lines, the credits under the name.
+BANNER_NAME = "Mii Channel AP\nNintendo / Pil_Bandit"
+IMET_NAMES = 0x5C          # from the start of the IMET header (magic at +0x40)
+IMET_NAME_SIZE = 0x54
+IMET_LANGUAGES = 10
+IMET_MD5 = 0x5F0           # MD5 of header bytes 0..0x600 with this field zeroed
 
 TMD_TITLE_ID = 0x18C
 TMD_CONTENT_COUNT = 0x1DE
@@ -112,6 +119,22 @@ def _enable_cheats(user_dir: str) -> bool:
     return True
 
 
+def _rename_banner(data: bytes) -> bytes:
+    """The channel's name in its banner (content 0, IMET header)."""
+    magic = data.find(b"IMET")
+    if magic < 0x40:
+        return data
+    base = magic - 0x40
+    header = bytearray(data[base:base + 0x600])
+    name = BANNER_NAME.encode("utf-16-be")[:IMET_NAME_SIZE].ljust(IMET_NAME_SIZE, b"\0")
+    for lang in range(IMET_LANGUAGES):
+        off = IMET_NAMES + lang * IMET_NAME_SIZE
+        header[off:off + IMET_NAME_SIZE] = name
+    header[IMET_MD5:IMET_MD5 + 16] = bytes(16)
+    header[IMET_MD5:IMET_MD5 + 16] = hashlib.md5(bytes(header)).digest()
+    return data[:base] + bytes(header) + data[base + 0x600:]
+
+
 def _installed_version(user_dir: str) -> str:
     try:
         with open(os.path.join(_title_dir(user_dir, TITLE_HIGH, TITLE_LOW), "archipelago.txt"),
@@ -145,10 +168,14 @@ def install(user_dir: str, gecko_ini: bytes, log: Callable[[str], None]) -> Tupl
                 continue                       # shared content: stays in Wii/shared1
             name = "%08x.app" % cid
             data = open(os.path.join(src_content, name), "rb").read()
+            original = data
+            if _index == 0:
+                data = _rename_banner(data)
             if DB_PATH in data:
                 data = data.replace(DB_PATH, AP_DB_PATH)
-                tmd[off + 16:off + 36] = hashlib.sha1(data).digest()
                 patched = True
+            if data != original:
+                tmd[off + 16:off + 36] = hashlib.sha1(data).digest()
             contents.append((name, data))
         if not patched:
             return False, ("This Mii Channel version is not supported (its Mii save path was not "
