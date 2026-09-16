@@ -50,7 +50,8 @@ as soon as a saved Mii matches. No clicking required.
   and every category:
   - grey-red: not unlocked yet
   - white: unlocked, you can do it now
-  - blue: this check has been hinted
+  - dark blue: this check has been hinted and you can do it now (listed first)
+  - blue: this check has been hinted, still locked
   - yellow: every copy still missing to unlock it has been hinted
   - green: check sent, still true on this Mii
   - orange: check sent, but no longer true on this Mii

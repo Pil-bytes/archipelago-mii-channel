@@ -152,13 +152,15 @@ WC24_SEPARATOR = "-------"
 # Shown when the header row of the envelope list is clicked (the dialog
 # holds about 175 characters in all, the summary above it included).
 WC24_COLOUR_LEGEND = ("Grey-red: locked  White: doable\n"
-                      "Blue: hinted  Yellow: unlock located\n"
+                      "Dark blue: doable, hinted  Blue: hinted\n"
+                      "Yellow: unlock located\n"
                       "Green: sent  Orange: sent, lost")
 
 # The user's colour scheme (2026-09-11).
 COL_LOCKED = (0xC07878FF, 0x8C5050FF)    # grey-red: not unlocked yet
 COL_IN_LOGIC = WC24_COLOR_DEFAULT        # white: doable now
 COL_HINTED = (0x5AA0FFFF, 0x3C6FC8FF)    # blue: this check has been hinted
+COL_HINTED_DOABLE = (0x2F55D8FF, 0x1E3A9EFF)  # dark blue: hinted and doable now (as the tracker)
 COL_WE_HINTED = (0xF0DC50FF, 0xC8B432FF) # yellow: every missing unlock has been hinted
 COL_SENT = (0x55DD55FF, 0x22AA33FF)      # green: sent, still on the Mii
 COL_LOST = (0xFFAA33FF, 0xDD7711FF)      # orange: sent, no longer on the Mii
@@ -941,7 +943,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                 lines.append(f"Hinted: {self._item_label(lh.get('item'), lh.get('receiving_player'))}")
                 lines.append(f"for {self._player_label(lh.get('receiving_player'))}")
             if lh is not None:
-                colour = COL_HINTED
+                colour = COL_HINTED if missing else COL_HINTED_DOABLE
             elif missing:
                 colour = COL_WE_HINTED if to_hint is None else COL_LOCKED
             else:
