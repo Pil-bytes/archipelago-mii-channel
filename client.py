@@ -371,24 +371,6 @@ _ID_TO_ITEM_NAME: Dict[int, str] = {data.code: name for name, data in item_table
 class MiiChannelCommandProcessor(CommonClient.ClientCommandProcessor):
     ctx: "MiiChannelContext"
 
-    def _cmd_features(self) -> bool:
-        """List the mod's feature switches (see /feature)."""
-        for name, on in self.ctx.features.items():
-            note = FEATURE_HELP.get(name, "")
-            CommonClient.logger.info(f"  [{'on ' if on else 'OFF'}] {name}{'  -- ' + note if note else ''}")
-        return True
-
-    def _cmd_feature(self, name: str = "", state: str = "") -> bool:
-        """Turn one layer of the mod on or off to isolate a bug, e.g.
-        /feature wc24_rows off. Saved across client restarts; /features lists them."""
-        if name not in self.ctx.features or state.lower() not in ("on", "off"):
-            CommonClient.logger.info(f"Usage: /feature <{'|'.join(self.ctx.features)}> on|off")
-            return True
-        self.ctx.features[name] = state.lower() == "on"
-        self.ctx._save_features()
-        CommonClient.logger.info(f"{name} is now {state.upper()}")
-        return True
-
     def _cmd_miipath(self, path: str = "") -> bool:
         """Manually set the path to your RFL_DB.dat (Wii Mii database) file."""
         if not path:

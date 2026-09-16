@@ -93,15 +93,18 @@ TOUCH = 12.0                    # cells closer than this are neighbours
 PADLOCK_MAX = 96.0
 PADLOCK_SHARE = 0.62            # of the rectangle's smaller side
 
-PAGE, COUNT, FLAG = "page", "count", "flag"
+PAGE, COUNT, FLAG, ALWAYS = "page", "count", "flag", "always"
 
 Rect = Tuple[float, float, float, float]
 
 # window -> (group pane, lock byte, mode, extra). extra is the page number for
 # PAGE, the field's default value for COUNT (always selectable, so it is taken
 # out of the rank the count is compared against, exactly like locks.py), and
-# None for FLAG.
+# None for FLAG. ALWAYS ignores the lock byte: the group is never usable.
 ZONES: Dict[str, List[Tuple[str, int, str, Optional[int]]]] = {
+    # the "Favorite?" box of the profile tab: the star is given by the client
+    # to a Mii that matches its target, never set by hand (user 2026-09-16)
+    "windowProfile": [("frmProfNull_03", 0x00, ALWAYS, None)],
     "windowEye": [("frmEyePrNull_%02d" % i, 0x00, PAGE, i) for i in range(4)]
     + [("cpEyePrNull_00", 0x0B, COUNT, 0), ("editEFrmPrN_00", 0x0C, FLAG, None)],
     "windowEyeB": [("frmEyeBPrNull_%02d" % i, 0x01, PAGE, i) for i in range(2)]
@@ -371,6 +374,8 @@ class _Zone:
             return self.cells if not (byte >> (self.extra or 0)) & 1 else []
         if self.mode == FLAG:
             return self.cells if byte == 0 else []
+        if self.mode == ALWAYS:
+            return self.cells
         default = self.extra or 0
         out = []
         for display, pane, box in self.cells:
