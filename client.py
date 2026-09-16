@@ -309,6 +309,19 @@ SCN_OBJ_NO_DRAW = 0x60
 # the Plaza's next frame reloads the actor with that slot the way the game's
 # own favourite button does, and writes 0 back.
 MII_REFRESH_REQUEST_ADDR = 0x803CB3F0
+
+# Game values the client keeps written (they used to be Gecko 04 lines; the
+# Gecko list is full, 3248 bytes). Tuned live with the user 2026-09-16.
+f32 = lambda v: struct.pack(">f", v)
+GAME_CONSTANTS: List[Tuple[int, bytes]] = [
+    (0x803BE3B8, f32(8.0)),        # head zoom: target scale = K * camera height / 3000
+    (0x803BE850, f32(-10000.0)),   # name balloon always below the head (Plaza, 3 modes)
+    (0x803BE854, f32(-10000.0)),
+    (0x803BE85C, f32(-10000.0)),
+    (0x803BEA08, f32(-10000.0)),   # ...and in the Parade
+    (0x803CB37C, f32(400 / 3000)), # camera aims this x camera height above the head
+    (0x803CB228, bytes([1])),      # "Locked zones: no hover" fake object flag
+]
 MII_REFRESH_CODE_ADDR = 0x803CB400
 MII_REFRESH_CODE_WORD = bytes.fromhex("9421FF80")
 
@@ -1959,6 +1972,13 @@ class MiiChannelContext(CommonClient.CommonContext):
 
             if self.features["restore_values"]:
                 self._refresh_restore_values()
+
+            for addr, value in GAME_CONSTANTS:
+                try:
+                    if _dme.read_bytes(addr, len(value)) != value:
+                        _dme.write_bytes(addr, value)
+                except Exception as e:
+                    CommonClient.logger.debug(f"Could not write the game constant at {addr:#x}: {e!r}")
 
             # All-or-nothing per category for now (matches the current item
             # model: one gating item per category, not per-page items) --
