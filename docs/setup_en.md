@@ -1,4 +1,4 @@
-# Mii Channel Auto Setup Guide (v1.1)
+# Mii Channel Auto Setup Guide (v1.0.1)
 
 ## What this is
 

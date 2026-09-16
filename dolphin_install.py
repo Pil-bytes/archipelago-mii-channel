@@ -1,5 +1,5 @@
 """Install "Mii Channel Archipelago", a modified copy of the Mii Channel, into
-the player's own Dolphin (v1.1, user request 2026-09-16: a modified game like
+the player's own Dolphin (v1.0.1, user request 2026-09-16: a modified game like
 PokePark's, not a separate Dolphin folder).
 
 RFL_DB.dat is the Wii's one Mii database, read by every game, and the client
