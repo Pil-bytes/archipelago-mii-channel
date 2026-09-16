@@ -115,13 +115,13 @@ ZONES: Dict[str, List[Tuple[str, int, str, Optional[int]]]] = {
     # so both grids open and close together
     "windowFace": [("frmFacePrNull_00", 0x05, FLAG, None), ("frmFacePrNull_01", 0x05, FLAG, None),
                    ("cpFacePrNull_00", 0x06, COUNT, 0)],
-    # glasses / beard / mole / moustache share one window. Measured live:
-    # _00 glasses (12 cells), _02 the mole's two cells, and _01/_03 are beard
-    # then moustache (seen 2026-09-16: an open moustache and a shut beard
-    # read "both locked" the other way round). The 8 swatch palette is the
-    # facial hair one, the 6 swatch one the glasses'.
-    "windowEtc": [("frmEtcPrNull_00", 0x07, COUNT, 0), ("frmEtcPrNull_01", 0x09, COUNT, 0),
-                  ("frmEtcPrNull_02", 0x0A, COUNT, 0), ("frmEtcPrNull_03", 0x08, COUNT, 0),
+    # glasses / moustache / mole / beard share one window. Measured live:
+    # _00 glasses (cells 00-11), _01 moustache (12-15), _02 the mole's two
+    # cells (24-25), _03 beard (16-19). The 8 swatch palette is the facial
+    # hair one, the 6 swatch one the glasses'. The cell numbers run on across
+    # the grids of this window, hence _cells counting from each grid's first.
+    "windowEtc": [("frmEtcPrNull_00", 0x07, COUNT, 0), ("frmEtcPrNull_01", 0x08, COUNT, 0),
+                  ("frmEtcPrNull_02", 0x0A, COUNT, 0), ("frmEtcPrNull_03", 0x09, COUNT, 0),
                   ("cpEtcPrNull_00", 0x15, COUNT, 0), ("cpEtcPrNull_01", 0x13, COUNT, 0),
                   ("editEtFrmPrN_00", 0x14, FLAG, None), ("editEtFrmPrN_01", 0x16, FLAG, None),
                   ("editEtFrmPrN_02", 0x17, FLAG, None)],
@@ -511,10 +511,10 @@ class ZoneLockOverlay:
 
     @staticmethod
     def _cells(dme, group: int, ours):
-        """[(display index, pane, box)] for the group's cells, boxes relative
-        to it. A cell is a direct child whose name ends in its display index
+        """[(display position, pane, box)] for the group's cells, boxes
+        relative to it. A cell is a direct child whose name ends in a number
         (colour swatches colorP*_NN, grid cells frame*Null_NN, movement
-        buttons edit*Null_NN)."""
+        buttons edit*Null_NN); its position counts from the group's first."""
         cells = []
         for child in _children(dme, group):
             raw = dme.read_bytes(child, 0xEC)
@@ -524,7 +524,11 @@ class ZoneLockOverlay:
             if match and box:
                 cells.append((int(match.group(1)), child, box))
         cells.sort()
-        return cells
+        # the accessories window numbers its cells across all its grids
+        # (moustache 12-15, beard 16-19...): positions count from each
+        # grid's first cell (user 2026-09-16: an open moustache was veiled)
+        first = cells[0][0] if cells else 0
+        return [(index - first, child, box) for index, child, box in cells]
 
     # --- lending icons ------------------------------------------------------
 
