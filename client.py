@@ -302,6 +302,12 @@ SCN_MDL_VTABLE = 0x8025BF60
 SCN_OBJ_FLAGS_OFFSET = 0x9C
 SCN_OBJ_NO_DRAW = 0x60
 
+# Live refresh of a Plaza Mii (gecko block "Plaza Mii refreshed after a trap"):
+# the client writes database slot + 1 here once the Mii is rewritten in RAM;
+# the Plaza's next frame reloads the actor with that slot the way the game's
+# own favourite button does, and writes 0 back.
+MII_REFRESH_REQUEST_ADDR = 0x803CB3F0
+
 # Editor heartbeat, bumped once per call of the hooked category-apply
 # function. A canary established that function fires ~120x/s while a Mii is
 # open in the editor and exactly 0 times anywhere else, so "this word is
@@ -517,6 +523,7 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.death_quit_requested = False   # a DeathLink arrived, not applied yet
         self.trap_quit_pending = False      # a Quit Without Saving trap waits for the editor
         self.blindfold_dirty = False        # the edited Mii may still be hidden
+        self.refresh_slots: List[int] = []  # Plaza Miis to reload on screen
         self.blindfold_passes: Dict[int, int] = {}   # character -> its draw pass before hiding
         self.quits_seen: Optional[int] = None
         self.selected_obj_addr: Optional[int] = None
@@ -1222,9 +1229,12 @@ class MiiChannelContext(CommonClient.CommonContext):
         try:
             if not self._ensure_dme_hooked():
                 return
-            for entry_addr, _mii in self._live_entries(mii):
+            entries = self._live_entries(mii)
+            for entry_addr, _mii in entries:
                 for field_name, value in changes.items():
                     write_mii_field_ram(_dme, entry_addr, field_name, value)
+            if entries and mii.slot not in self.refresh_slots:
+                self.refresh_slots.append(mii.slot)      # show it in the Plaza now
         except Exception as e:
             CommonClient.logger.debug(f"Could not mirror a trap into Dolphin: {e!r}")
 
@@ -1768,6 +1778,16 @@ class MiiChannelContext(CommonClient.CommonContext):
                     CommonClient.logger.info("You quit without saving: DeathLink sent.")
             self.quits_seen = quits
 
+    def _refresh_step(self) -> None:
+        """Hand the Plaza one Mii to reload at a time (the Gecko block takes a
+        single request per frame and clears it once done)."""
+        if not self.refresh_slots:
+            return
+        if int.from_bytes(_dme.read_bytes(MII_REFRESH_REQUEST_ADDR, 4), "big") != 0:
+            return
+        slot = self.refresh_slots.pop(0)
+        _dme.write_bytes(MII_REFRESH_REQUEST_ADDR, (slot + 1).to_bytes(4, "big"))
+
     def _editor_traps_step(self, editor_open: bool) -> None:
         """Every 0.1 s, with a fresh heartbeat: start the traps that wait for
         the editor, and keep the edited Mii hidden while a Blindfold lasts.
@@ -1840,6 +1860,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                 now = time.monotonic()
                 self._death_link_step(moving)
                 self._editor_traps_step(moving)
+                self._refresh_step()
                 if moving:
                     last_move = now
                     if now >= next_tick:
