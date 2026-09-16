@@ -102,9 +102,6 @@ Rect = Tuple[float, float, float, float]
 # out of the rank the count is compared against, exactly like locks.py), and
 # None for FLAG. ALWAYS ignores the lock byte: the group is never usable.
 ZONES: Dict[str, List[Tuple[str, int, str, Optional[int]]]] = {
-    # the "Favorite?" box of the profile tab: the star is given by the client
-    # to a Mii that matches its target, never set by hand (user 2026-09-16)
-    "windowProfile": [("frmProfNull_03", 0x00, ALWAYS, None)],
     "windowEye": [("frmEyePrNull_%02d" % i, 0x00, PAGE, i) for i in range(4)]
     + [("cpEyePrNull_00", 0x0B, COUNT, 0), ("editEFrmPrN_00", 0x0C, FLAG, None)],
     "windowEyeB": [("frmEyeBPrNull_%02d" % i, 0x01, PAGE, i) for i in range(2)]

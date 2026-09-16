@@ -84,4 +84,8 @@ SCREEN_TEXTS: Dict[str, str] = {
     # these are the game's own refusals, forced on every transfer.
     "0600500": "Archipelago: Miis can't be sent\nto the Mii Parade.",
     "0000014": "Archipelago: Miis can't be sent\nfrom the Mii Parade to the Plaza.",
+    # the favourite star is reserved for completion (gecko block "Favorites
+    # are earned"): both star buttons always take the game's "10 favourites"
+    # refusal, whose text this is.
+    "0000006": "Archipelago: stars are earned.\nA Mii gets its favorite star\nwhen it matches its target.",
 }

@@ -1691,7 +1691,8 @@ class MiiChannelContext(CommonClient.CommonContext):
             for _ in range(quits - self.quits_seen):
                 if self.death_link_enabled:
                     Utils.async_start(self.send_death(f"{self.player_names.get(self.slot, 'A player')} "
-                                                      f"quit a Mii without saving."))
+                                                      f"quit a Mii without saving. "
+                                                      f"They did it on purpose 100% trust."))
                     CommonClient.logger.info("You quit without saving: DeathLink sent.")
             self.quits_seen = quits
 
