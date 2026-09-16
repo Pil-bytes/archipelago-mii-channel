@@ -565,7 +565,12 @@ class MiiChannelContext(CommonClient.CommonContext):
         import re
         import shutil
         import Utils
-        owner = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{self.seed_name}_{self.team}_{self.slot}")
+        seed = getattr(self, "room_seed_name", None) or self.seed_name
+        if not seed:
+            CommonClient.logger.error("The server did not say which game this is: no Mii save is touched.")
+            self.mii_db_path, self.blocked_save_path = None, path
+            return
+        owner = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{seed}_{self.team}_{self.slot}")
         saves = Utils.user_path("mii_channel_auto", "saves")
         os.makedirs(saves, exist_ok=True)
         record = os.path.join(saves, "current.json")
@@ -657,6 +662,8 @@ class MiiChannelContext(CommonClient.CommonContext):
         await super().disconnect(allow_autoreconnect)
 
     def on_package(self, cmd: str, args: Any) -> None:
+        if cmd == "RoomInfo":
+            self.room_seed_name = args.get("seed_name")   # self.seed_name was still None at Connected
         if cmd == "Connected":
             self._select_save()
             slot_data: Dict[str, Any] = args.get("slot_data") or {}
