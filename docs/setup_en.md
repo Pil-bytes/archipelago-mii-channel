@@ -60,6 +60,16 @@ as soon as a saved Mii matches. No clicking required.
   `!hint <item>` for you. Sent rows show what the check gave and to whom.
 - **Edit an existing Mii**: click Edit Mii, then grab the Mii and drop it on
   the Edit Mii button.
+- **Look at a Mii**: click one in the Plaza or the Parade. Its head grows
+  much bigger than in the original game, with its name under the chin, and
+  the camera frames the face. The zoom buttons do nothing while a Mii is
+  selected: deselect it to change the zoom.
+- **Finished Miis**: a Mii that matches its whole target gets the favourite
+  star. The star buttons are reserved for this, and a starred Mii can't be
+  dropped on Edit Mii or Erase any more -- your finished work is safe. Only a
+  Mutation trap can take the star away.
+- **Transfers** between the Plaza and the Mii Parade are blocked (the Parade
+  holds the targets).
 - Each Mii works on one target at a time: the client pairs every Mii with
   the target it resembles most.
 
@@ -101,7 +111,9 @@ traps; each trap has its own weight option (0 disables it):
 A finished Mii is one that matches its target: it wears the favourite star,
 which only the client gives (the game's star buttons are blocked). Traps
 never touch the targets, and each one plays once: restarting the client does
-not replay traps you already received.
+not replay traps you already received. A trap that changes a Mii shows at
+once on the Mii walking in the Plaza. The values are fully random, so a
+Shuffle or a Mutation can also match a category by luck and send its check.
 
 ## DeathLink
 
@@ -114,9 +126,6 @@ saving; outside the editor it does nothing.
 
 - `/targets` lists the targets and your progress; `/targets 3` prints target
   3's exact values.
-- `/features` lists the client's switchable features and `/feature <name>
-  on|off` toggles one (saved in the Dolphin user folder) -- useful to isolate
-  a problem.
 - `/miipath <path>` sets the save file manually.
 
 ## Troubleshooting
@@ -129,6 +138,8 @@ saving; outside the editor it does nothing.
   keep the total small: Dolphin silently drops Gecko codes past ~3 KB.
 - **Locks don't react after restarting Dolphin**: the client reconnects to
   the new Dolphin by itself within a few seconds; if not, restart the client.
+- **Head zoom, name position or padlocks look like the original game**: those
+  values are written by the client -- make sure it is connected.
 - **Back up `RFL_DB.dat`** before a long session. The client edits it (target
   Miis in the Parade, reverting locked features, traps) with correct
   checksums, but a backup costs nothing.

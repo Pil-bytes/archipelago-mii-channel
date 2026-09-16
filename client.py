@@ -284,7 +284,6 @@ FACIAL_FEATURE_LOCK_BITMASK_ADDR = 0x803C1618
 QUITS_MADE_ADDR = 0x803CB244      # +1 each time the PLAYER quits without saving
 DEATH_LINK_ON_ADDR = 0x803CB248   # 1: that quit skips its confirmation
 FORCE_QUIT_ADDR = 0x803CB24C      # 1: the editor quits without saving, then 0
-DEATH_LINK_TEST_PATH = os.path.join(tempfile.gettempdir(), "mii_channel_death_link_test")
 
 # Blindfold Trap (live RE 2026-09-16). The game's character manager (pointer
 # at 0x803BD3A4, loaded from r13-0x717c) holds 110 character slots; its draw
@@ -331,23 +330,6 @@ MII_REFRESH_CODE_WORD = bytes.fromhex("9421FF80")
 # still changing" is a reliable "the editor is open" signal -- and its
 # rising edge is the moment to capture the values below.
 EDITOR_HEARTBEAT_ADDR = 0x803C17F0
-
-# Test mode for the editor locks (user request 2026-09-16: "debloquer certains
-# elements pour verifier toutes les combinaisons"): a JSON file
-# {"bytes": {"0x04": 1, ...}} forces lock bytes 0x803C1600 + index in the game
-# only -- nothing is sent to the server. Delete the file to go back to the
-# real items. Saving a Mii built with test unlocks is still corrected by the
-# save-file layer, which uses the real items.
-TEST_UNLOCKS_PATH = os.path.join(tempfile.gettempdir(), "mii_channel_test_unlocks.json")
-
-
-def _test_unlocks() -> Dict[int, int]:
-    try:
-        with open(TEST_UNLOCKS_PATH, encoding="utf-8") as fh:
-            raw = json.load(fh).get("bytes", {})
-        return {int(k, 0): int(v) & 0xFF for k, v in raw.items()}
-    except (OSError, ValueError, AttributeError, TypeError):
-        return {}
 
 # Per-field restore values the V9 trampoline reads when a field is locked.
 # Before V9 it wrote zeroes (which froze the game on save, since
@@ -615,10 +597,6 @@ class MiiChannelContext(CommonClient.CommonContext):
             self.miis_required = slot_data.get("miis_required", 10)
             self.target_miis = slot_data.get("target_miis", [])
             self.death_link_enabled = bool(slot_data.get("death_link", 0))
-            if os.path.exists(DEATH_LINK_TEST_PATH):
-                # local test switch: DeathLink without generating a new seed
-                self.death_link_enabled = True
-                CommonClient.logger.warning(f"TEST MODE: DeathLink forced on by {DEATH_LINK_TEST_PATH}")
             if self.death_link_enabled:
                 Utils.async_start(self.update_death_link(True))
                 # the menu button that now kills everyone says so
@@ -2059,13 +2037,6 @@ class MiiChannelContext(CommonClient.CommonContext):
                 CommonClient.logger.debug(f"Could not write the screen texts: {e!r}")
             self._repoint_screen_messages()
 
-            test_unlocks = _test_unlocks()
-            if bool(test_unlocks) != getattr(self, "test_unlocks_on", False):
-                self.test_unlocks_on = bool(test_unlocks)
-                CommonClient.logger.warning(
-                    f"TEST MODE: lock bytes forced from {TEST_UNLOCKS_PATH}" if test_unlocks
-                    else "Test mode off: locks follow the received items again.")
-
             for addr, bitmask, label in (
                 (EYE_LOCK_BITMASK_ADDR, eye_bitmask, "eye"),
                 (EYEBROW_LOCK_BITMASK_ADDR, eyebrow_bitmask, "eyebrow"),
@@ -2107,7 +2078,6 @@ class MiiChannelContext(CommonClient.CommonContext):
                     # locked -- the opposite of switching the layer off.)
                     if self.traps.is_jammed(label):
                         bitmask = 0x00          # Tool Jam Trap: locked again for a while
-                    bitmask = test_unlocks.get(addr - EYE_LOCK_BITMASK_ADDR, bitmask)
                     _dme.write_bytes(addr, bytes([bitmask if self.features["asm_locks"] else 0xFF]))
                 except Exception as e:
                     CommonClient.logger.debug(f"ASM lock-bitmask write failed for {label} (will retry): {e!r}")
