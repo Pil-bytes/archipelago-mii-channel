@@ -152,14 +152,14 @@ WC24_SEPARATOR = "-------"
 # Shown when the header row of the envelope list is clicked (the dialog
 # holds about 175 characters in all, the summary above it included).
 WC24_COLOUR_LEGEND = ("Grey-red: locked  White: doable\n"
-                      "Blue: hinted  Violet: unlock hinted\n"
+                      "Blue: hinted  Yellow: unlock located\n"
                       "Green: sent  Orange: sent, lost")
 
 # The user's colour scheme (2026-09-11).
 COL_LOCKED = (0xC07878FF, 0x8C5050FF)    # grey-red: not unlocked yet
 COL_IN_LOGIC = WC24_COLOR_DEFAULT        # white: doable now
 COL_HINTED = (0x5AA0FFFF, 0x3C6FC8FF)    # blue: this check has been hinted
-COL_WE_HINTED = (0xB478F0FF, 0x8250C3FF) # violet: what unlocks it has been hinted
+COL_WE_HINTED = (0xF0DC50FF, 0xC8B432FF) # yellow: every missing unlock has been hinted
 COL_SENT = (0x55DD55FF, 0x22AA33FF)      # green: sent, still on the Mii
 COL_LOST = (0xFFAA33FF, 0xDD7711FF)      # orange: sent, no longer on the Mii
 
@@ -872,7 +872,12 @@ class MiiChannelContext(CommonClient.CommonContext):
         for category in list(CATEGORY_FIELDS) + ["Body"]:
             matched = (body_matches(mii, target) if category == "Body"
                        else category_matches(mii, target, category))
-            checked = target_location_name(target_index, category) in self.checked_names
+            # the server's list too: a check sent in an earlier session (then
+            # lost to a trap or an edit) is not in checked_names, and showed
+            # as still to do without what it sent (user 2026-09-16)
+            checked = (target_location_name(target_index, category) in self.checked_names
+                       or location_name_to_id.get(target_location_name(target_index, category))
+                       in self.checked_locations)
             if matched:
                 sent.append(category)
             elif checked:
