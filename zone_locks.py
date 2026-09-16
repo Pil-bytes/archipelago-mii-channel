@@ -1,28 +1,37 @@
-"""Locked parts of the Mii editor under a grey veil with one dark padlock
-(user requests 2026-09-15/16: "une zone grisee, et le cadenas au dessus ... il
-faut mettre le cadenas qu'une fois", "le cadenas fonce partout", hovered items
-must not draw over it, and the veil shrinks as things unlock).
+"""Locked parts of the Mii editor under a grey veil with a dark padlock
+(user requests 2026-09-15/16: "une zone grisee, et le cadenas au dessus",
+"le cadenas fonce partout", hovered items must not draw over it, the veil
+shrinks as things unlock, one padlock per separate locked group, and no dark
+seam where two veils meet).
 
 What is veiled is computed cell by cell:
   * page grids (eye, eyebrow, hair, mouth types): the whole page while its bit
     is clear in the lock byte;
   * counted grids and colour palettes (nose, glasses, moustache, beard, mole,
-    every colour): only the swatches/cells still out of reach -- the lock byte
-    says how many non-default values are allowed and they open in value order,
-    so the veil shrinks from the end (see locks.palette_allowed_count);
-  * movement blocks: all four to eight buttons while the byte is 0.
+    every colour): only the cells still out of reach -- the lock byte says how
+    many non-default values are allowed and they open in value order, which is
+    not always the display order (DISPLAY_ORDER);
+  * movement blocks: all their buttons while the byte is 0.
+The veiled cells are cut into rectangles: runs of neighbouring cells in a
+row, stacked when rows line up. Rectangles that touch form one group, which
+gets one padlock; where two rectangles of a group meet they stop at the
+middle of the gap instead of overlapping (an overlap doubles the veil).
 
 No pane is created. Each editor tab is a window; only the current tab's is
 visible. The overlay borrows a simple icon picture from one of the HIDDEN
 windows -- a movement icon: I4 texture, coloured by its vertex colours, alpha
 = intensity, so the padlock is dark -- moves it to the end of the visible
 window's child list (drawn after everything, hovered cells included),
-stretches it over the veiled cells and points it at our texture: a
-translucent veil with an opaque padlock and a clear keyhole, I4 64x64 in
-MEM1. Texture coordinates beyond 0..1 keep the padlock square in the middle;
-the texture is clamped, so its veil border fills the rest. Nothing of the
-visible tab is touched, and the icon goes back to its own window with its own
-values as soon as the zone unlocks or leaves the screen.
+stretches it over a rectangle and points it at our texture: a translucent
+veil with an opaque padlock and a clear keyhole, I4 64x64 in MEM1. Texture
+coordinates beyond 0..1 keep the padlock square in the middle; the texture is
+clamped, so its veil border fills the rest. A rectangle without the padlock
+samples a corner of the texture. Nothing of the visible tab is touched, and
+the icon goes back to its own window with its own values as soon as the zone
+unlocks or leaves the screen.
+
+Lent icons are also written to LENT_STATE_PATH, so a client restarted while
+the editor is open gives them back instead of leaving buttons without icons.
 
 Two tables are published for the Gecko blocks:
   0x803CB100  veils lent out (8) -- "Editor veils stay on top" moves them back
@@ -49,8 +58,11 @@ nw4r lyt objects, as measured live in the channel (2026-09-15):
             nibble = wrap S/T, 0 = clamp), +0x08 fmt<<20 | (h-1)<<10 | (w-1),
             +0x0C image physical address >> 5, +0x14 format again
 """
+import json
+import os
 import re
 import struct
+import tempfile
 from typing import Dict, List, Optional, Sequence, Tuple
 
 INTERVAL_SECONDS = 0.5
@@ -62,7 +74,7 @@ TEX_BYTES = 0x800
 OLD_TEX_ADDRS = (0x803C9E00, 0x803CA600)   # anything pointing here is ours
 VEIL_TABLE_ADDR = 0x803CB100
 VEIL_SLOTS = 8
-MAX_VEILS_PER_ZONE = 3          # a partly locked grid needs a rectangle per row
+MAX_VEILS_PER_ZONE = 4          # more rectangles than this: one box for the zone
 LOCKED_TABLE_ADDR = 0x803CB120
 LOCKED_SLOTS = 48
 WINDOW_VT = 0x8025C17C
@@ -72,14 +84,18 @@ MEM2_LO, MEM2_HI = 0x90000000, 0x94000000
 SCAN_CHUNK = 0x100000
 SCAN_CHUNKS_PER_TICK = 16
 ANCHOR_WINDOW = "windowMouth"   # any editor window; its parent is the root
+LENT_STATE_PATH = os.path.join(tempfile.gettempdir(), "mii_channel_lent_icons.json")
 
 VEIL = 5                        # 0-15: alpha of the veil
 PADLOCK_RGBA = bytes.fromhex("303030ff")
-MARGIN = 6.0                    # layout units around the veiled cells
+MARGIN = 6.0                    # layout units around a group of veiled cells
+TOUCH = 12.0                    # cells closer than this are neighbours
 PADLOCK_MAX = 96.0
-PADLOCK_SHARE = 0.62            # of the veiled area's smaller side
+PADLOCK_SHARE = 0.62            # of the rectangle's smaller side
 
 PAGE, COUNT, FLAG = "page", "count", "flag"
+
+Rect = Tuple[float, float, float, float]
 
 # window -> (group pane, lock byte, mode, extra). extra is the page number for
 # PAGE, the field's default value for COUNT (always selectable, so it is taken
@@ -95,21 +111,24 @@ ZONES: Dict[str, List[Tuple[str, int, str, Optional[int]]]] = {
     "windowNose": [("frmNosePrNull_00", 0x03, COUNT, 1), ("editNsFrmPrN_00", 0x10, FLAG, None)],
     "windowMouth": [("frmMoutPrNull_%02d" % i, 0x04, PAGE, i) for i in range(2)]
     + [("cpMosePrNull_00", 0x11, COUNT, 0), ("editMFrmPrN_00", 0x12, FLAG, None)],
-    # face shape and the makeup marks share one lock byte, so it stays a flag
+    # face shape and the makeup marks share one lock byte in the trampoline,
+    # so both grids open and close together
     "windowFace": [("frmFacePrNull_00", 0x05, FLAG, None), ("frmFacePrNull_01", 0x05, FLAG, None),
                    ("cpFacePrNull_00", 0x06, COUNT, 0)],
-    # glasses / moustache / mole / beard share one window (measured live: the
-    # grids are in that order, _02 being the mole's two cells), and the 8
-    # swatch palette is the facial hair one, the 6 swatch one the glasses'
-    "windowEtc": [("frmEtcPrNull_00", 0x07, COUNT, 0), ("frmEtcPrNull_01", 0x08, COUNT, 0),
-                  ("frmEtcPrNull_02", 0x0A, COUNT, 0), ("frmEtcPrNull_03", 0x09, COUNT, 0),
+    # glasses / beard / mole / moustache share one window. Measured live:
+    # _00 glasses (12 cells), _02 the mole's two cells, and _01/_03 are beard
+    # then moustache (seen 2026-09-16: an open moustache and a shut beard
+    # read "both locked" the other way round). The 8 swatch palette is the
+    # facial hair one, the 6 swatch one the glasses'.
+    "windowEtc": [("frmEtcPrNull_00", 0x07, COUNT, 0), ("frmEtcPrNull_01", 0x09, COUNT, 0),
+                  ("frmEtcPrNull_02", 0x0A, COUNT, 0), ("frmEtcPrNull_03", 0x08, COUNT, 0),
                   ("cpEtcPrNull_00", 0x15, COUNT, 0), ("cpEtcPrNull_01", 0x13, COUNT, 0),
                   ("editEtFrmPrN_00", 0x14, FLAG, None), ("editEtFrmPrN_01", 0x16, FLAG, None),
                   ("editEtFrmPrN_02", 0x17, FLAG, None)],
 }
 
-# The editor does not always show a category in value order: the game
-# keeps a value -> display position table per paginated category (main.dol
+# The editor does not always show a category in value order: the game keeps
+# a value -> display position table per paginated category (main.dol
 # 0x802070d0 hair, 0x80207118 eye, 0x80207148 eyebrow, 0x80207160 nose,
 # 0x80207170 mouth). Only counted grids need it here -- a page is veiled
 # whole, and the other categories are in value order (measured live: the
@@ -118,7 +137,7 @@ DISPLAY_ORDER: Dict[str, Sequence[int]] = {
     "frmNosePrNull_00": (5, 0, 2, 3, 7, 6, 4, 10, 8, 9, 1, 11),
 }
 
-_INDEX = re.compile(r"_(\d+)$")
+_INDEX = re.compile("_([0-9]+)$")
 
 
 def _alpha(x: int, y: int) -> int:
@@ -146,6 +165,86 @@ def padlock_texture() -> bytes:
                 for x in range(bx, bx + 8):
                     nib.append(_alpha(x, y))
     return bytes((nib[j] << 4) | nib[j + 1] for j in range(0, 4096, 2))
+
+
+def veil_rects(boxes: Sequence[Rect]) -> List[Tuple[Rect, bool]]:
+    """Rectangles covering exactly `boxes` (cell boxes), each with whether it
+    carries its group's padlock.
+
+    Runs of neighbouring cells in a row, runs stacked when they line up;
+    rectangles that touch form a group with one padlock (on its biggest
+    rectangle); a side that meets a rectangle of the same group stops at the
+    middle of the gap, the others get MARGIN."""
+    rows: Dict[int, List[Rect]] = {}
+    for box in boxes:
+        rows.setdefault(int(round((box[1] + box[3]) / 2)), []).append(box)
+    runs: List[Rect] = []
+    for _row, cells in sorted(rows.items(), reverse=True):
+        cells.sort()
+        run = list(cells[0])
+        for c in cells[1:]:
+            if c[0] - run[2] <= TOUCH:
+                run = [run[0], min(run[1], c[1]), c[2], max(run[3], c[3])]
+            else:
+                runs.append(tuple(run))
+                run = list(c)
+        runs.append(tuple(run))
+
+    rects: List[List[float]] = []
+    for r in runs:
+        for s in rects:
+            if abs(s[0] - r[0]) < 1 and abs(s[2] - r[2]) < 1 and \
+                    min(abs(s[1] - r[3]), abs(r[1] - s[3])) <= TOUCH:
+                s[1], s[3] = min(s[1], r[1]), max(s[3], r[3])
+                break
+        else:
+            rects.append(list(r))
+
+    def gap_x(a, b):
+        return max(a[0], b[0]) - min(a[2], b[2])
+
+    def gap_y(a, b):
+        return max(a[1], b[1]) - min(a[3], b[3])
+
+    def touching(a, b):
+        return (gap_x(a, b) <= TOUCH and gap_y(a, b) < 0) or (gap_y(a, b) <= TOUCH and gap_x(a, b) < 0)
+
+    group = list(range(len(rects)))
+
+    def find(i):
+        while group[i] != i:
+            group[i] = group[group[i]]
+            i = group[i]
+        return i
+
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            if touching(rects[i], rects[j]):
+                group[find(i)] = find(j)
+
+    out: List[Tuple[Rect, bool]] = []
+    best: Dict[int, int] = {}
+    for i, r in enumerate(rects):
+        g = find(i)
+        area = (r[2] - r[0]) * (r[3] - r[1])
+        if g not in best or area > (rects[best[g]][2] - rects[best[g]][0]) * (rects[best[g]][3] - rects[best[g]][1]):
+            best[g] = i
+    for i, r in enumerate(rects):
+        left = right = bottom = top = MARGIN
+        for j, s in enumerate(rects):
+            if j == i or find(j) != find(i):
+                continue
+            if gap_y(r, s) < 0 and 0 <= r[0] - s[2] <= TOUCH:
+                left = (r[0] - s[2]) / 2
+            if gap_y(r, s) < 0 and 0 <= s[0] - r[2] <= TOUCH:
+                right = (s[0] - r[2]) / 2
+            if gap_x(r, s) < 0 and 0 <= r[1] - s[3] <= TOUCH:
+                bottom = (r[1] - s[3]) / 2
+            if gap_x(r, s) < 0 and 0 <= s[1] - r[3] <= TOUCH:
+                top = (s[1] - r[3]) / 2
+        out.append(((r[0] - left, r[1] - bottom, r[2] + right, r[3] + top), best[find(i)] == i))
+    out.sort(key=lambda item: not item[1])
+    return out
 
 
 def _u32(dme, addr: int) -> int:
@@ -212,7 +311,7 @@ def _subtree(dme, pane: int, ox: float, oy: float, depth: int = 0):
     return items
 
 
-def _box_of(dme, pane: int, ox: float, oy: float, skip) -> Optional[Tuple[float, float, float, float]]:
+def _box_of(dme, pane: int, ox: float, oy: float, skip) -> Optional[Rect]:
     boxes = []
     for p, raw, x, y in _subtree(dme, pane, ox, oy):
         if struct.unpack_from(">I", raw, 0)[0] not in BOX_VTS or p in skip:
@@ -242,17 +341,15 @@ def _is_ours(dme, texobj: int) -> bool:
 
 class _Zone:
     def __init__(self, window: int, group: int, lock: int, mode: str, extra: Optional[int],
-                 cells: Sequence[Tuple[int, int, Tuple[float, float, float, float]]],
-                 _name_of_group: str = ""):
+                 cells: Sequence[Tuple[int, int, Rect]], group_name: str = ""):
         self.window = window
         self.group = group
         self.lock = lock
         self.mode = mode
         self.extra = extra
         self.cells = cells            # [(display index, pane, box relative to the group)]
-        order = DISPLAY_ORDER.get(_name_of_group, ())
-        # display index -> value; empty table means the two orders match
-        self.value_of = {display: value for value, display in enumerate(order)}
+        # display index -> value; an empty table means the two orders match
+        self.value_of = {display: value for value, display in enumerate(DISPLAY_ORDER.get(group_name, ()))}
         self.donors: List["_Donor"] = []   # one per veil rectangle
 
     def locked_cells(self, byte: int):
@@ -282,6 +379,7 @@ class _Donor:
         self.parent = 0               # where it came from, while lent
         self.prev_node = 0
         self.slot = -1
+        self.lent_to = 0              # the window it is lent to
         self.saved: List[Tuple[int, bytes]] = []
 
 
@@ -306,6 +404,46 @@ class ZoneLockOverlay:
         if self.logger:
             self.logger.debug(msg)
 
+    # --- remembering what is lent, across client restarts --------------------
+
+    def _save_state(self) -> None:
+        state = {"anchor": self.anchor or 0, "icons": [
+            {"pane": d.pane, "parent": d.parent, "prev": d.prev_node, "lent_to": d.lent_to,
+             "saved": [[addr, data.hex()] for addr, data in d.saved]}
+            for d in self.donors if d.parent]}
+        try:
+            with open(LENT_STATE_PATH, "w", encoding="utf-8") as fh:
+                json.dump(state, fh)
+        except OSError:
+            pass
+
+    def _give_back_leftovers(self, dme, anchor: int) -> int:
+        """Icons an earlier client run lent in this very editor session."""
+        try:
+            with open(LENT_STATE_PATH, encoding="utf-8") as fh:
+                state = json.load(fh)
+        except (OSError, ValueError):
+            return 0
+        if state.get("anchor") != anchor:
+            return 0                  # another editor session: those panes are gone
+        restored = 0
+        for icon in state.get("icons", []):
+            pane, parent, prev, holder = icon["pane"], icon["parent"], icon["prev"], icon["lent_to"]
+            try:
+                if _u32(dme, pane + 0x0C) != holder:
+                    continue
+                _unlink(dme, pane, holder)
+                after = prev
+                if after != parent + 0x14 and _u32(dme, after - 4 + 0x0C) != parent:
+                    after = _u32(dme, parent + 0x18)
+                _link_after(dme, pane, parent, after)
+                for addr, data in icon["saved"]:
+                    dme.write_bytes(addr, bytes.fromhex(data))
+                restored += 1
+            except Exception:
+                continue
+        return restored
+
     # --- finding the layout -------------------------------------------------
 
     def _scan_step(self, dme) -> None:
@@ -329,6 +467,7 @@ class ZoneLockOverlay:
         dme.write_bytes(VEIL_TABLE_ADDR, bytes(4 * VEIL_SLOTS))     # nothing lent yet
         dme.write_bytes(LOCKED_TABLE_ADDR, bytes(4 * LOCKED_SLOTS))
         self.locked_table = bytes(4 * LOCKED_SLOTS)
+        restored = self._give_back_leftovers(dme, anchor)
         root = _u32(dme, anchor + 0x0C)
         windows, donors, missing, stale = [], [], [], 0
         for window in _children(dme, root):
@@ -341,8 +480,8 @@ class ZoneLockOverlay:
                 by_name.setdefault(_name(raw), p)
                 t = _texobj(dme, raw)
                 if t and _is_ours(dme, t):
-                    # left over by an earlier run: some materials ignore the
-                    # pane alpha, a 0x0 quad draws nothing whatever the material
+                    # left over and not in the saved state: some materials
+                    # ignore the pane alpha, a 0x0 quad draws nothing at all
                     dme.write_bytes(p + 0x4C, struct.pack(">2f", 0.0, 0.0))
                     dme.write_bytes(p + 0xCD, b"\x00")
                     ours.add(p)
@@ -363,19 +502,19 @@ class ZoneLockOverlay:
                     missing.append(group_name)
             windows.append((window, zones))
         self.anchor, self.windows, self.donors = anchor, windows, donors
+        self._save_state()
         self._log(f"Editor zone padlocks: {sum(len(z) for _, z in windows)} zones, "
                   f"{len(donors)} icons to lend"
+                  + (f", {restored} icon(s) given back from a previous run" if restored else "")
                   + (f", none for {', '.join(missing)}" if missing else "")
                   + (f", {stale} stale veil(s) hidden" if stale else ""))
 
     @staticmethod
     def _cells(dme, group: int, ours):
-        """[(value id, pane, box)] for the group's cells, boxes relative to it.
-
-        A cell is a direct child whose name ends in its value id (colour
-        swatches colorP*_NN, grid cells frame*Null_NN, movement buttons
-        edit*Null_NN); the ids follow the editor's own order, which is what
-        the counts open up."""
+        """[(display index, pane, box)] for the group's cells, boxes relative
+        to it. A cell is a direct child whose name ends in its display index
+        (colour swatches colorP*_NN, grid cells frame*Null_NN, movement
+        buttons edit*Null_NN)."""
         cells = []
         for child in _children(dme, group):
             raw = dme.read_bytes(child, 0xEC)
@@ -400,45 +539,16 @@ class ZoneLockOverlay:
         return False
 
     @staticmethod
-    def _rects(cells) -> List[Tuple[float, float, float, float]]:
-        """Veil rectangles covering exactly `cells`.
-
-        Values unlock in order, so what stays locked is the end of the grid:
-        a partly locked row plus the rows under it, which is not one
-        rectangle -- covering their bounding box would veil the swatches the
-        player just earned (user 2026-09-16: the first two eye colours were
-        selectable but under the veil). One rectangle per row, rows with the
-        same width merged, biggest first (it carries the padlock)."""
-        rows: Dict[int, List[Tuple[float, float, float, float]]] = {}
-        for _value, _pane, box in cells:
-            rows.setdefault(int(round((box[1] + box[3]) / 2)), []).append(box)
-        merged: List[Tuple[float, float, float, float]] = []
-        for _key, boxes in sorted(rows.items(), reverse=True):
-            rect = (min(b[0] for b in boxes), min(b[1] for b in boxes),
-                    max(b[2] for b in boxes), max(b[3] for b in boxes))
-            if merged and abs(merged[-1][0] - rect[0]) < 1 and abs(merged[-1][2] - rect[2]) < 1:
-                last = merged[-1]
-                merged[-1] = (last[0], min(last[1], rect[1]), last[2], max(last[3], rect[3]))
-            else:
-                merged.append(rect)
-        merged.sort(key=lambda r: (r[2] - r[0]) * (r[3] - r[1]), reverse=True)
-        if len(merged) > MAX_VEILS_PER_ZONE:      # too fragmented: one box for the lot
-            merged = [(min(r[0] for r in merged), min(r[1] for r in merged),
-                       max(r[2] for r in merged), max(r[3] for r in merged))]
-        return merged
-
-    @staticmethod
-    def _veil_writes(dme, zone: _Zone, donor: _Donor, rect, padlock_on: bool) -> List[Tuple[int, bytes]]:
+    def _veil_writes(dme, zone: _Zone, donor: _Donor, rect: Rect, padlock_on: bool):
         gx, gy = _abs_pos(dme, zone.group, zone.window)
-        x0, y0 = rect[0] - MARGIN + gx, rect[1] - MARGIN + gy
-        x1, y1 = rect[2] + MARGIN + gx, rect[3] + MARGIN + gy
+        x0, y0, x1, y1 = rect[0] + gx, rect[1] + gy, rect[2] + gx, rect[3] + gy
         width, height = x1 - x0, y1 - y0
         if padlock_on:
             padlock = min(PADLOCK_MAX, PADLOCK_SHARE * min(width, height))
             u, v = width / (2 * padlock), height / (2 * padlock)
             coords = (0.5 - u, 0.5 - v, 0.5 + u, 0.5 - v, 0.5 - u, 0.5 + v, 0.5 + u, 0.5 + v)
         else:
-            # a corner of the texture, veil only -- the padlock is shown once
+            # a corner of the texture, veil only
             coords = (0.02, 0.02, 0.10, 0.02, 0.02, 0.10, 0.10, 0.10)
         p, t = donor.pane, donor.texobj
         filt, size_bits, maddr = _u32(dme, t), _u32(dme, t + 0x08), _u32(dme, t + 0x0C)
@@ -468,6 +578,8 @@ class ZoneLockOverlay:
             (donor.coords, 32))]
         donor.parent = _u32(dme, p + 0x0C)
         donor.prev_node = _u32(dme, p + 0x08)
+        donor.lent_to = zone.window
+        self._save_state()            # before moving it: a crash now still gives it back
         _unlink(dme, p, donor.parent)
         _link_after(dme, p, zone.window, _u32(dme, zone.window + 0x18))
         donor.slot = slot
@@ -488,8 +600,10 @@ class ZoneLockOverlay:
         for addr, data in donor.saved:
             dme.write_bytes(addr, data)
         donor.parent = 0
+        donor.lent_to = 0
         if donor in zone.donors:
             zone.donors.remove(donor)
+        self._save_state()
 
     def tick(self, dme, editor_open: bool) -> None:
         if not editor_open:
@@ -498,6 +612,7 @@ class ZoneLockOverlay:
                 dme.write_bytes(VEIL_TABLE_ADDR, bytes(4 * VEIL_SLOTS))
                 dme.write_bytes(LOCKED_TABLE_ADDR, bytes(4 * LOCKED_SLOTS))
                 self.reset()
+                self._save_state()
             return
         if self.anchor is None:
             self._scan_step(dme)
@@ -513,12 +628,18 @@ class ZoneLockOverlay:
         self.ticks += 1
 
         locks = dme.read_bytes(LOCK_BASE, LOCK_COUNT)
-        wanted: List[Tuple[_Zone, list, list]] = []
+        wanted = []
         for window, zones in self.windows:
             window_shown = bool(dme.read_bytes(window + 0xCF, 1)[0] & 1)
             for zone in zones:
                 cells = zone.locked_cells(locks[zone.lock]) if window_shown else []
-                rects = self._rects(cells) if cells and self._shown(dme, zone) else []
+                rects = []
+                if cells and self._shown(dme, zone):
+                    rects = veil_rects([c[2] for c in cells])
+                    if len(rects) > MAX_VEILS_PER_ZONE:
+                        box = (min(r[0][0] for r in rects), min(r[0][1] for r in rects),
+                               max(r[0][2] for r in rects), max(r[0][3] for r in rects))
+                        rects = [(box, True)]
                 # free what this zone no longer needs before anything is lent
                 while len(zone.donors) > len(rects):
                     self._give_back(dme, zone, zone.donors[-1])
@@ -527,11 +648,11 @@ class ZoneLockOverlay:
 
         locked_panes = []
         for zone, cells, rects in wanted:
-            for i, rect in enumerate(rects):
+            for i, (rect, padlock_on) in enumerate(rects):
                 donor = zone.donors[i] if i < len(zone.donors) else self._lend(dme, zone)
                 if donor is None:
                     break
-                for addr, data in self._veil_writes(dme, zone, donor, rect, i == 0):
+                for addr, data in self._veil_writes(dme, zone, donor, rect, padlock_on):
                     dme.write_bytes(addr, data)
             # a whole veiled group can be named once; single cells one by one
             if len(cells) == len(zone.cells):
