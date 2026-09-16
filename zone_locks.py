@@ -108,6 +108,16 @@ ZONES: Dict[str, List[Tuple[str, int, str, Optional[int]]]] = {
                   ("editEtFrmPrN_02", 0x17, FLAG, None)],
 }
 
+# The editor does not always show a category in value order: the game
+# keeps a value -> display position table per paginated category (main.dol
+# 0x802070d0 hair, 0x80207118 eye, 0x80207148 eyebrow, 0x80207160 nose,
+# 0x80207170 mouth). Only counted grids need it here -- a page is veiled
+# whole, and the other categories are in value order (measured live: the
+# nose's 12 cells read 1, 10, 2, 3, 6, 0, 5, 4, 8, 9, 7, 11).
+DISPLAY_ORDER: Dict[str, Sequence[int]] = {
+    "frmNosePrNull_00": (5, 0, 2, 3, 7, 6, 4, 10, 8, 9, 1, 11),
+}
+
 _INDEX = re.compile(r"_(\d+)$")
 
 
@@ -232,13 +242,17 @@ def _is_ours(dme, texobj: int) -> bool:
 
 class _Zone:
     def __init__(self, window: int, group: int, lock: int, mode: str, extra: Optional[int],
-                 cells: Sequence[Tuple[int, int, Tuple[float, float, float, float]]]):
+                 cells: Sequence[Tuple[int, int, Tuple[float, float, float, float]]],
+                 _name_of_group: str = ""):
         self.window = window
         self.group = group
         self.lock = lock
         self.mode = mode
         self.extra = extra
-        self.cells = cells            # [(value id, pane, box relative to the group)]
+        self.cells = cells            # [(display index, pane, box relative to the group)]
+        order = DISPLAY_ORDER.get(_name_of_group, ())
+        # display index -> value; empty table means the two orders match
+        self.value_of = {display: value for value, display in enumerate(order)}
         self.donors: List["_Donor"] = []   # one per veil rectangle
 
     def locked_cells(self, byte: int):
@@ -249,12 +263,13 @@ class _Zone:
             return self.cells if byte == 0 else []
         default = self.extra or 0
         out = []
-        for value, pane, box in self.cells:
+        for display, pane, box in self.cells:
+            value = self.value_of.get(display, display)
             if value == default:
                 continue
             rank = value if value < default else value - 1
             if rank >= byte:
-                out.append((value, pane, box))
+                out.append((display, pane, box))
         return out
 
 
@@ -343,7 +358,7 @@ class ZoneLockOverlay:
                 group = by_name.get(group_name)
                 cells = self._cells(dme, group, ours) if group else []
                 if cells:
-                    zones.append(_Zone(window, group, lock, mode, extra, cells))
+                    zones.append(_Zone(window, group, lock, mode, extra, cells, group_name))
                 else:
                     missing.append(group_name)
             windows.append((window, zones))
