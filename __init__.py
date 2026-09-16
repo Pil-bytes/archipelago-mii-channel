@@ -47,19 +47,14 @@ class MiiChannelSettings(settings.Group):
         is_exe = True
         description = "Dolphin Emulator executable (Dolphin.exe)"
 
-    class ProfileFolder(str):
-        """Dolphin user folder Mii Channel Auto plays in. Empty: a folder of its
-        own inside Archipelago, created on first launch with the Mii Channel
-        copied from your Dolphin -- your own Miis are never touched. Only name a
-        folder here that you are ready to lose the Mii save of."""
-
-    class SourceUserFolder(str):
-        """Your regular Dolphin user folder, to copy the Mii Channel from when
-        creating the profile. Empty: found automatically."""
+    class DolphinUserFolder(str):
+        """Your Dolphin user folder (the one holding Wii/, Config/, GameSettings/).
+        Empty: found from Dolphin.exe (portable install, or the usual location).
+        "Mii Channel Archipelago" is installed there, next to your Mii Channel,
+        with a Mii save of its own -- your Miis are never touched."""
 
     dolphin_path: DolphinPath = DolphinPath("Dolphin.exe")
-    profile_folder: ProfileFolder = ProfileFolder("")
-    source_user_folder: SourceUserFolder = SourceUserFolder("")
+    dolphin_user_folder: DolphinUserFolder = DolphinUserFolder("")
 
 
 class MiiChannelWebWorld(WebWorld):

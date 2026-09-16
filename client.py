@@ -29,7 +29,7 @@ from .traps import (BLINDFOLD_SECONDS, JAM_TARGETS, LOCKDOWN_SECONDS, TOOL_JAM_S
                     defaults, growth_spurt, mutation, paint_spill, pick_victim, shuffle,
                     traps_done_key)
 from .help_text import SCREEN_TEXTS
-from . import dolphin_profile
+from . import dolphin_install
 from .zone_locks import INTERVAL_SECONDS as ZONE_LOCK_INTERVAL_SECONDS, ZoneLockOverlay
 
 # Per-screen texts (gecko dialog block, BuildWC24DialogTable). The table at
@@ -61,7 +61,6 @@ def _screen_text_blobs() -> Tuple[bytes, bytes]:
         buffers += encoded + bytes(TEXT_BUFFER_BYTES - len(encoded))
     return bytes(table), bytes(buffers)
 from .mii_reader import (
-    MII_CHANNEL_TITLE_ID,
     Mii,
     find_mii_entries_by_name,
     write_mii_fields,
@@ -533,36 +532,29 @@ class MiiChannelContext(CommonClient.CommonContext):
         self._load_features()
 
     def _prepare_profile(self) -> None:
-        """The Dolphin user folder to play in (dolphin_profile.py): created on
-        first launch, never the player's regular one. Without it the client
-        leaves the Mii save alone."""
+        """Install or update "Mii Channel Archipelago" (dolphin_install.py) in
+        the player's Dolphin: a copy of the Mii Channel with a Mii save of its
+        own. Without it the client leaves every Mii save alone."""
         try:
             import settings
-            import Utils
             opts = settings.get_settings().mii_channel_auto_options
             exe = str(opts.dolphin_path)              # asks for Dolphin.exe the first time
-            folder = str(opts.profile_folder or "").strip()
-            explicit = bool(folder)
-            if not folder:
-                folder = Utils.user_path("mii_channel_auto", "dolphin_user")
-            source = str(opts.source_user_folder or "").strip()
+            folder = str(opts.dolphin_user_folder or "").strip() or dolphin_install.find_user_dir(exe)
             gecko = pkgutil.get_data(__package__, "gecko/HACA01.ini")
-            ok, message = dolphin_profile.prepare(folder, explicit, exe, source, gecko,
-                                                  CommonClient.logger.info)
+            ok, message = dolphin_install.install(folder, gecko, CommonClient.logger.info)
         except Exception as e:
-            ok, message = False, f"Could not prepare the Dolphin folder: {e!r}"
+            ok, message = False, f"Could not install Mii Channel Archipelago: {e!r}"
         if not ok:
             CommonClient.logger.error(message + " The client will not touch any Mii save until this is fixed.")
             return
         self.profile_dir = folder
         self.dolphin_exe = exe
-        self.mii_db_path = dolphin_profile.rfl_db_path(folder)
-        CommonClient.logger.info(f"Playing in the Dolphin folder {folder}")
+        self.mii_db_path = dolphin_install.save_path(folder)
+        CommonClient.logger.info(f"Mii Channel Archipelago ready in {folder}")
 
     def _features_path(self) -> Optional[str]:
-        if not self.profile_dir:
-            return None
-        return os.path.join(self.profile_dir, FEATURES_FILE)
+        import Utils
+        return Utils.user_path("mii_channel_auto", FEATURES_FILE)
 
     def _load_features(self) -> None:
         path = self._features_path()
@@ -769,12 +761,12 @@ class MiiChannelContext(CommonClient.CommonContext):
         if not exe or not os.path.isfile(exe):
             CommonClient.logger.info(
                 f"Dolphin.exe not found at {exe} -- fix dolphin_path in host.yaml, or start "
-                f"Dolphin yourself with: Dolphin.exe -u \"{profile_dir}\" -n {MII_CHANNEL_TITLE_ID}"
+                f"Dolphin yourself with: Dolphin.exe -u \"{profile_dir}\" -n {dolphin_install.TITLE_ID}"
             )
             return
 
         try:
-            subprocess.Popen([exe, "-u", profile_dir, "-n", MII_CHANNEL_TITLE_ID])
+            subprocess.Popen([exe, "-u", profile_dir, "-n", dolphin_install.TITLE_ID])
         except OSError as e:
             CommonClient.logger.warning(f"Could not start Dolphin: {e!r}")
             return

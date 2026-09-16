@@ -22,11 +22,10 @@ as soon as a saved Mii matches. No clicking required.
 ## Your Miis are safe
 
 The Mii save (`RFL_DB.dat`) is shared by the whole Wii, and this client
-rewrites it constantly. So it never plays in your Dolphin: on first launch it
-creates a Dolphin user folder of its own (inside Archipelago's folder), copies
-the Mii Channel into it from your Dolphin -- **not** your Miis -- and always
-starts Dolphin on that folder. Your regular Dolphin and its Miis are never
-read for Miis nor written.
+rewrites the save it plays with constantly. So you don't play in the real Mii
+Channel: the client installs **Mii Channel Archipelago** in your Dolphin, a
+copy of the Mii Channel whose Mii save is a separate file (`RFL_AP.dat`).
+Your Miis, your Mii Channel and every other game are left untouched.
 
 ## Installation
 
@@ -37,22 +36,22 @@ read for Miis nor written.
 3. Fill in `docs/Mii Channel Auto.yaml` (every option is explained in it) and
    include it in your multiworld.
 
-That's all: the Gecko codes and the "Enable Cheats" setting are put in the
-client's own Dolphin folder automatically.
+That's all: the modified channel, its Gecko codes and Dolphin's "Enable
+Cheats" setting are installed by the client.
 
 ## Joining a MultiWorld Game
 
 1. From the Launcher, start "Mii Channel Client" and connect.
-2. The first time, it asks where `Dolphin.exe` is, then creates its Dolphin
-   folder (a few seconds).
-3. It writes the targets into the **Mii Parade**, then starts Dolphin on the
-   Mii Channel by itself. Leave the client running while you play.
+2. The first time, it asks where `Dolphin.exe` is, then installs Mii Channel
+   Archipelago into your Dolphin (a few seconds).
+3. It writes the targets into the **Mii Parade**, then starts Dolphin on Mii
+   Channel Archipelago by itself. Leave the client running while you play.
+   (Starting it yourself: the title is `0001000248415058`, shown as "HAPX".)
 
 Settings live in Archipelago's `host.yaml`, under `mii_channel_auto_options`:
-`dolphin_path` (Dolphin.exe), `profile_folder` (empty: the client's own
-folder; name a folder only if you accept losing its Mii save) and
-`source_user_folder` (where to copy the Mii Channel from; empty: found
-automatically, including portable Dolphins).
+`dolphin_path` (Dolphin.exe) and `dolphin_user_folder` (your Dolphin user
+folder, the one holding `Wii`, `Config` and `GameSettings`; empty: found from
+Dolphin.exe, portable installs included).
 
 ## How to play
 
@@ -154,9 +153,10 @@ saving; outside the editor it does nothing.
   the new Dolphin by itself within a few seconds; if not, restart the client.
 - **Head zoom, name position or padlocks look like the original game**: those
   values are written by the client -- make sure it is connected.
-- **"The Mii Channel is not installed in your Dolphin"**: install it (see
-  Installation), or set `source_user_folder` in host.yaml to the Dolphin user
-  folder that has it.
-- **Back up the client's `RFL_DB.dat`** before a long session. The client
+- **"The Mii Channel is not installed in this Dolphin"**: install it (see
+  Installation), or set `dolphin_user_folder` in host.yaml if your Dolphin
+  keeps its data elsewhere.
+- **Back up `RFL_AP.dat`** (Wii/shared2/menu/FaceLib in your Dolphin folder)
+  before a long session. The client
   edits it (target Miis in the Parade, reverting locked features, traps) with
   correct checksums, but a backup costs nothing.
