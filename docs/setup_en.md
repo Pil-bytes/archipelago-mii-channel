@@ -27,6 +27,12 @@ Channel: the client installs **Mii Channel Archipelago** in your Dolphin, a
 copy of the Mii Channel whose Mii save is a separate file (`RFL_AP.dat`).
 Your Miis, your Mii Channel and every other game are left untouched.
 
+Each Archipelago game has its own Mii save. Connecting to a new game parks
+the previous game's save in `<Archipelago>/mii_channel_auto/saves` and starts
+with an empty Plaza; connecting to that older game again brings its Miis back.
+Close Dolphin before switching games: while it runs, the game keeps its own
+copy of the save, so the client waits for you to close it and reconnect.
+
 ## Installation
 
 1. Install the Mii Channel in Dolphin once, if it isn't there yet:

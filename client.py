@@ -482,6 +482,7 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.profile_dir: Optional[str] = None
         self.dolphin_exe: Optional[str] = None
         self.mii_db_path: Optional[str] = None
+        self.blocked_save_path: Optional[str] = None   # save of another game, Dolphin open
         self._prepare_profile()
         self.miis_required = 10
         self.target_miis = []
@@ -552,6 +553,60 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.mii_db_path = dolphin_install.save_path(folder)
         CommonClient.logger.info(f"Mii Channel Archipelago ready in {folder}")
 
+    def _select_save(self) -> None:
+        """One Mii save per multiworld (user 2026-09-17). RFL_AP.dat is the
+        save of the game this connection plays; any other game's save is
+        parked in <Archipelago>/mii_channel_auto/saves and comes back when
+        that game is played again. Only while Dolphin is closed: the running
+        game keeps its own copy of the save and writes it back."""
+        if self.mii_db_path is None and self.blocked_save_path is None:
+            return                                   # no Mii Channel Archipelago
+        path = self.mii_db_path or self.blocked_save_path
+        import re
+        import shutil
+        import Utils
+        owner = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{self.seed_name}_{self.team}_{self.slot}")
+        saves = Utils.user_path("mii_channel_auto", "saves")
+        os.makedirs(saves, exist_ok=True)
+        record = os.path.join(saves, "current.json")
+        try:
+            with open(record, encoding="utf-8") as fh:
+                current = json.load(fh)
+        except (OSError, ValueError):
+            current = {}
+        previous = current.get("owner") if current.get("save") == path else None
+
+        def claim() -> None:
+            with open(record, "w", encoding="utf-8") as fh:
+                json.dump({"save": path, "owner": owner}, fh)
+
+        if previous == owner:
+            self.mii_db_path, self.blocked_save_path = path, None
+            return
+        if previous is None:
+            claim()                                  # first game on this save: keep it
+            self.mii_db_path, self.blocked_save_path = path, None
+            return
+        if self._dolphin_is_running():
+            self.mii_db_path, self.blocked_save_path = None, path
+            CommonClient.logger.error(
+                "The Mii save in Dolphin belongs to another Archipelago game. Close Dolphin, then "
+                "reconnect this client: it will put this game's save in place. Until then no Mii "
+                "save is touched.")
+            return
+        if os.path.isfile(path):
+            shutil.move(path, os.path.join(saves, previous + ".dat"))
+        parked = os.path.join(saves, owner + ".dat")
+        if os.path.isfile(parked):
+            shutil.move(parked, path)
+            CommonClient.logger.info("Welcome back: this game's Miis are back in Mii Channel Archipelago.")
+        else:
+            CommonClient.logger.info(
+                "New Archipelago game: Mii Channel Archipelago starts with an empty Plaza "
+                "(the previous game's Miis are kept aside and come back when you play it again).")
+        claim()
+        self.mii_db_path, self.blocked_save_path = path, None
+
     def _features_path(self) -> Optional[str]:
         import Utils
         return Utils.user_path("mii_channel_auto", FEATURES_FILE)
@@ -603,6 +658,7 @@ class MiiChannelContext(CommonClient.CommonContext):
 
     def on_package(self, cmd: str, args: Any) -> None:
         if cmd == "Connected":
+            self._select_save()
             slot_data: Dict[str, Any] = args.get("slot_data") or {}
             self.miis_required = slot_data.get("miis_required", 10)
             self.target_miis = slot_data.get("target_miis", [])
