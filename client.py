@@ -1083,9 +1083,9 @@ class MiiChannelContext(CommonClient.CommonContext):
                 except Exception as e:
                     CommonClient.logger.warning(f"Could not update {mii.name}'s progress badge: {e!r}")
                     continue
-                self._update_creator_in_ram(mii.name, wanted)
+                self._update_creator_in_ram(mii, wanted)
 
-    def _update_creator_in_ram(self, mii_name: str, text: str) -> None:
+    def _update_creator_in_ram(self, mii: Mii, text: str) -> None:
         """Mirror a creator-line change into the running game's copy so the
         bubble updates without leaving the channel. Silent on failure: the
         save already has it, so the worst case is the badge only appearing
@@ -1095,7 +1095,7 @@ class MiiChannelContext(CommonClient.CommonContext):
         try:
             if not self._ensure_dme_hooked():
                 return
-            for entry_addr, _mii in find_mii_entries_by_name(read_wii_memory(_dme), mii_name):
+            for entry_addr, _mii in self._live_entries(mii):
                 write_mii_creator_ram(_dme, entry_addr, text)
         except Exception as e:
             CommonClient.logger.debug(f"Could not mirror the progress badge into Dolphin: {e!r}")
@@ -1147,7 +1147,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                         write_mii_field(self.mii_db_path, victim.slot, field_name, value)
                     except Exception as e:
                         CommonClient.logger.warning(f"{name}: could not change {victim.name}: {e!r}")
-                self._mirror_fields_in_ram(victim.name, changes)
+                self._mirror_fields_in_ram(victim, changes)
                 what = ", ".join(f"{field.replace(chr(95), chr(32))} {value}"
                                  for field, value in changes.items())
                 CommonClient.logger.info(f"{name}! {victim.name} now has {what}.")
@@ -1180,7 +1180,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                     except Exception as e:
                         CommonClient.logger.warning(f"{name}: could not change {victim.name}: {e!r}")
                         continue
-                    self._mirror_fields_in_ram(victim.name, changes)
+                    self._mirror_fields_in_ram(victim, changes)
                 CommonClient.logger.info(told)
             elif name == "Blindfold Trap":
                 self.traps.blindfold_pending = True
@@ -1206,7 +1206,15 @@ class MiiChannelContext(CommonClient.CommonContext):
             "operations": [{"operation": "replace", "value": self.traps.done}],
         }]))
 
-    def _mirror_fields_in_ram(self, mii_name: str, changes: Dict[str, int]) -> None:
+    @staticmethod
+    def _live_entries(mii: Mii) -> List[Tuple[int, Mii]]:
+        """The running game's copies of `mii`, matched by name AND id: never
+        write into RAM found by the name alone."""
+        if not mii.mii_id or mii.mii_id == bytes(len(mii.mii_id)):
+            return []
+        return find_mii_entries_by_name(read_wii_memory(_dme), mii.name, mii.mii_id)
+
+    def _mirror_fields_in_ram(self, mii: Mii, changes: Dict[str, int]) -> None:
         """Same fields on the running game's copy of the Mii, so a trap shows
         without leaving the channel. Silent on failure: the save has it."""
         if _dme is None:
@@ -1214,7 +1222,7 @@ class MiiChannelContext(CommonClient.CommonContext):
         try:
             if not self._ensure_dme_hooked():
                 return
-            for entry_addr, _mii in find_mii_entries_by_name(read_wii_memory(_dme), mii_name):
+            for entry_addr, _mii in self._live_entries(mii):
                 for field_name, value in changes.items():
                     write_mii_field_ram(_dme, entry_addr, field_name, value)
         except Exception as e:
@@ -1566,7 +1574,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                         try:
                             write_mii_creator(self.mii_db_path, winning_mii.slot, badge)
                             write_mii_field(self.mii_db_path, winning_mii.slot, "is_favorite", 1)
-                            self._update_creator_in_ram(winning_mii.name, badge)
+                            self._update_creator_in_ram(winning_mii, badge)
                             CommonClient.logger.info(
                                 f"'{winning_mii.name}' is a perfect copy of Target {target_index + 1}! "
                                 f"Badged '{badge}' and marked as a favorite."

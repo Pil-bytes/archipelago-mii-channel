@@ -911,6 +911,19 @@ def remove_miis_by_name(path: str, names) -> int:
     return removed
 
 
+# Fields stored as a whole byte of the entry rather than a FIELD_SPECS
+# bitfield. Writing them through FIELD_SPECS raised KeyError halfway through
+# a trap (user 2026-09-16: Shuffle and Default did nothing).
+BYTE_FIELDS: Dict[str, int] = {"height": 0x16, "weight": 0x17}
+
+
+def _field_layout(field_name: str) -> Tuple[int, int, int, int]:
+    """(word offset, word bits, start from msb, width) of any writable field."""
+    if field_name in BYTE_FIELDS:
+        return BYTE_FIELDS[field_name], 8, 0, 8
+    return FIELD_SPECS[field_name]
+
+
 def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
     """
     Revert a single field on a single Mii slot to `value`, in place, and
@@ -921,7 +934,7 @@ def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
     CRC footer (not a full-file rewrite), to minimize the chance of colliding
     with a concurrent write from a running Dolphin.
     """
-    word_offset, word_bits, start_from_msb, width = FIELD_SPECS[field_name]
+    word_offset, word_bits, start_from_msb, width = _field_layout(field_name)
     word_size = word_bits // 8
 
     entry_offset = ENTRY_START + slot * ENTRY_SIZE
@@ -951,10 +964,11 @@ def write_mii_field(path: str, slot: int, field_name: str, value: int) -> None:
 def write_mii_fields(path: str, slot: int, changes: Dict[str, int]) -> None:
     """write_mii_field for several fields of one Mii at once: every word
     patched, then a single CRC recompute (a trap re-rolls ~40 fields)."""
+    layouts = {name: _field_layout(name) for name in changes}   # unknown field: nothing written
     entry_offset = ENTRY_START + slot * ENTRY_SIZE
     with open(path, "r+b") as fh:
         for field_name, value in changes.items():
-            word_offset, word_bits, start_from_msb, width = FIELD_SPECS[field_name]
+            word_offset, word_bits, start_from_msb, width = layouts[field_name]
             word_size = word_bits // 8
             fh.seek(entry_offset + word_offset)
             current = int.from_bytes(fh.read(word_size), "big")
@@ -1030,10 +1044,17 @@ def read_wii_memory(dme) -> List[tuple]:
     return chunks
 
 
-def find_mii_entries_by_name(memory_chunks: List[tuple], name: str) -> List["tuple[int, Mii]"]:
+def find_mii_entries_by_name(memory_chunks: List[tuple], name: str,
+                             mii_id: Optional[bytes] = None) -> List["tuple[int, Mii]"]:
     """Search already-read memory chunks for every live Mii entry whose name
-    matches `name` exactly. Returns [(entry_addr, Mii), ...]."""
+    matches `name` exactly. Returns [(entry_addr, Mii), ...].
+
+    Pass the Mii's 8-byte id whenever something will be WRITTEN there: a short
+    name matches all over RAM (user 2026-09-16: a Default Trap on a Mii named
+    "'" wrote Mii fields into the game's memory and crashed it). The whole
+    20-byte name field must match too, padding included."""
     needle = name.encode("utf-16-be")
+    name_field = needle[:20].ljust(20, b"\0")
     results = []
     for base, data in memory_chunks:
         start = 0
@@ -1046,6 +1067,10 @@ def find_mii_entries_by_name(memory_chunks: List[tuple], name: str) -> List["tup
             if entry_off < 0 or entry_off + ENTRY_SIZE > len(data):
                 continue
             raw = data[entry_off:entry_off + ENTRY_SIZE]
+            if raw[0x02:0x16] != name_field:
+                continue
+            if mii_id is not None and raw[MII_ID_OFFSET:MII_ID_OFFSET + MII_ID_SIZE] != mii_id:
+                continue
             mii = _parse_entry(raw, slot=0, off=0)
             if mii is not None and mii.name == name:
                 results.append((base + entry_off, mii))
@@ -1099,7 +1124,7 @@ def write_mii_name_ram(dme, entry_addr: int, name: str) -> None:
 def write_mii_field_ram(dme, entry_addr: int, field_name: str, value: int) -> None:
     """Same targeted read-modify-write as write_mii_field, but against live
     Dolphin RAM at `entry_addr` (as returned by find_mii_entries_by_name)."""
-    word_offset, word_bits, start_from_msb, width = FIELD_SPECS[field_name]
+    word_offset, word_bits, start_from_msb, width = _field_layout(field_name)
     word_size = word_bits // 8
     abs_addr = entry_addr + word_offset
 
