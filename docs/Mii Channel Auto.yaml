@@ -10,7 +10,7 @@ game: Mii Channel Auto
 requires:
   version: 0.6.7
   game:
-    Mii Channel Auto: 1.0.0
+    Mii Channel Auto: 1.0.1
 
 Mii Channel Auto:
   ################

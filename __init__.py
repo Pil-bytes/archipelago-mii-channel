@@ -1,3 +1,4 @@
+import os
 from typing import Any, ClassVar, Dict, List
 
 import settings
@@ -32,13 +33,15 @@ LauncherComponents.components.append(
     )
 )
 
-LauncherComponents.components.append(
-    LauncherComponents.Component(
-        "Mii Channel RAM Probe",
-        func=launch_dme_probe,
-        component_type=LauncherComponents.Type.TOOL,
+# Development tool (live RAM reverse engineering), hidden from players.
+if os.environ.get("MII_CHANNEL_DEV"):
+    LauncherComponents.components.append(
+        LauncherComponents.Component(
+            "Mii Channel RAM Probe",
+            func=launch_dme_probe,
+            component_type=LauncherComponents.Type.TOOL,
+        )
     )
-)
 
 
 class MiiChannelSettings(settings.Group):
@@ -63,7 +66,7 @@ class MiiChannelWebWorld(WebWorld):
     tutorials = [
         Tutorial(
             "Multiworld Setup Guide",
-            "How to set up the automatic Mii Channel client, which reads your real Miis from RFL_DB.dat.",
+            "How to install Mii Channel Archipelago and play the Mii Channel in a multiworld.",
             "English",
             "setup_en.md",
             "setup/en",
@@ -74,9 +77,10 @@ class MiiChannelWebWorld(WebWorld):
 
 class MiiChannelWorld(World):
     """
-    An automatically-tracked Archipelago world for the Wii Mii Channel. It
-    reads your real Mii database (RFL_DB.dat) and checks locations for you as
-    you actually create and customize Miis -- no manual clicking required.
+    Recreate target Miis in the Wii Mii Channel (Dolphin) while the editor's
+    tools are unlocked by items from the multiworld. The client installs a
+    patched copy of the channel with a Mii save of its own and sends checks
+    as you save your Miis.
     """
 
     game = "Mii Channel Auto"
