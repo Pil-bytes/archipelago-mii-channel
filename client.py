@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import pkgutil
 import subprocess
 import tempfile
 import struct
@@ -28,6 +29,7 @@ from .traps import (BLINDFOLD_SECONDS, JAM_TARGETS, LOCKDOWN_SECONDS, TOOL_JAM_S
                     defaults, growth_spurt, mutation, paint_spill, pick_victim, shuffle,
                     traps_done_key)
 from .help_text import SCREEN_TEXTS
+from . import dolphin_profile
 from .zone_locks import INTERVAL_SECONDS as ZONE_LOCK_INTERVAL_SECONDS, ZoneLockOverlay
 
 # Per-screen texts (gecko dialog block, BuildWC24DialogTable). The table at
@@ -61,10 +63,7 @@ def _screen_text_blobs() -> Tuple[bytes, bytes]:
 from .mii_reader import (
     MII_CHANNEL_TITLE_ID,
     Mii,
-    dolphin_profile_dir,
-    find_dolphin_exe,
     find_mii_entries_by_name,
-    find_rfl_db,
     write_mii_fields,
     read_miis,
     read_wii_memory,
@@ -397,16 +396,6 @@ _ID_TO_ITEM_NAME: Dict[int, str] = {data.code: name for name, data in item_table
 class MiiChannelCommandProcessor(CommonClient.ClientCommandProcessor):
     ctx: "MiiChannelContext"
 
-    def _cmd_miipath(self, path: str = "") -> bool:
-        """Manually set the path to your RFL_DB.dat (Wii Mii database) file."""
-        if not path:
-            CommonClient.logger.info(f"Current path: {self.ctx.mii_db_path or '(not set)'}")
-            return True
-
-        self.ctx.mii_db_path = path
-        CommonClient.logger.info(f"Mii database path set to: {path}")
-        return True
-
     def _cmd_targets(self, index: str = "") -> bool:
         """List your target Miis and how many categories you've matched so
         far. Pass a target number (e.g. /targets 3) to print that target's
@@ -491,7 +480,10 @@ class MiiChannelContext(CommonClient.CommonContext):
 
     def __init__(self, server_address: Optional[str], password: Optional[str]) -> None:
         super().__init__(server_address, password)
-        self.mii_db_path = find_rfl_db()
+        self.profile_dir: Optional[str] = None
+        self.dolphin_exe: Optional[str] = None
+        self.mii_db_path: Optional[str] = None
+        self._prepare_profile()
         self.miis_required = 10
         self.target_miis = []
         self.checked_names = set()
@@ -540,11 +532,37 @@ class MiiChannelContext(CommonClient.CommonContext):
         self.features: Dict[str, bool] = dict(FEATURE_DEFAULTS)
         self._load_features()
 
+    def _prepare_profile(self) -> None:
+        """The Dolphin user folder to play in (dolphin_profile.py): created on
+        first launch, never the player's regular one. Without it the client
+        leaves the Mii save alone."""
+        try:
+            import settings
+            import Utils
+            opts = settings.get_settings().mii_channel_auto_options
+            exe = str(opts.dolphin_path)              # asks for Dolphin.exe the first time
+            folder = str(opts.profile_folder or "").strip()
+            explicit = bool(folder)
+            if not folder:
+                folder = Utils.user_path("mii_channel_auto", "dolphin_user")
+            source = str(opts.source_user_folder or "").strip()
+            gecko = pkgutil.get_data(__package__, "gecko/HACA01.ini")
+            ok, message = dolphin_profile.prepare(folder, explicit, exe, source, gecko,
+                                                  CommonClient.logger.info)
+        except Exception as e:
+            ok, message = False, f"Could not prepare the Dolphin folder: {e!r}"
+        if not ok:
+            CommonClient.logger.error(message + " The client will not touch any Mii save until this is fixed.")
+            return
+        self.profile_dir = folder
+        self.dolphin_exe = exe
+        self.mii_db_path = dolphin_profile.rfl_db_path(folder)
+        CommonClient.logger.info(f"Playing in the Dolphin folder {folder}")
+
     def _features_path(self) -> Optional[str]:
-        if not self.mii_db_path:
+        if not self.profile_dir:
             return None
-        import os
-        return os.path.join(dolphin_profile_dir(self.mii_db_path), FEATURES_FILE)
+        return os.path.join(self.profile_dir, FEATURES_FILE)
 
     def _load_features(self) -> None:
         path = self._features_path()
@@ -746,12 +764,12 @@ class MiiChannelContext(CommonClient.CommonContext):
             CommonClient.logger.info("Dolphin is already running -- leaving it alone.")
             return
 
-        profile_dir = dolphin_profile_dir(self.mii_db_path)
-        exe = find_dolphin_exe(profile_dir)
-        if not exe:
+        profile_dir = self.profile_dir
+        exe = self.dolphin_exe
+        if not exe or not os.path.isfile(exe):
             CommonClient.logger.info(
-                "Could not find Dolphin.exe to start automatically -- launch it yourself "
-                "(the target Miis are already written to your save)."
+                f"Dolphin.exe not found at {exe} -- fix dolphin_path in host.yaml, or start "
+                f"Dolphin yourself with: Dolphin.exe -u \"{profile_dir}\" -n {MII_CHANNEL_TITLE_ID}"
             )
             return
 
@@ -1371,15 +1389,7 @@ class MiiChannelContext(CommonClient.CommonContext):
                 return
 
             if not self.mii_db_path:
-                self.mii_db_path = find_rfl_db()
-                if not self.mii_db_path:
-                    if not self.could_not_find_file_logged:
-                        CommonClient.logger.warning(
-                            "Could not find RFL_DB.dat automatically. "
-                            "Use /miipath <full path to RFL_DB.dat> to set it manually."
-                        )
-                        self.could_not_find_file_logged = True
-                    return
+                return            # no Dolphin folder of ours (see _prepare_profile)
 
             i: int
             network_item: Any

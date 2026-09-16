@@ -1,4 +1,4 @@
-# Mii Channel Auto Setup Guide (v1.0)
+# Mii Channel Auto Setup Guide (v1.1)
 
 ## What this is
 
@@ -19,26 +19,40 @@ as soon as a saved Mii matches. No clicking required.
 - A **dedicated Dolphin user folder** is strongly recommended (the client
   writes the target Miis into that save; keep your real Miis elsewhere)
 
+## Your Miis are safe
+
+The Mii save (`RFL_DB.dat`) is shared by the whole Wii, and this client
+rewrites it constantly. So it never plays in your Dolphin: on first launch it
+creates a Dolphin user folder of its own (inside Archipelago's folder), copies
+the Mii Channel into it from your Dolphin -- **not** your Miis -- and always
+starts Dolphin on that folder. Your regular Dolphin and its Miis are never
+read for Miis nor written.
+
 ## Installation
 
-1. Drop `mii_channel_auto.apworld` into Archipelago's `custom_worlds` folder
+1. Install the Mii Channel in Dolphin once, if it isn't there yet:
+   *Tools > Perform Online System Update*, or install the Mii Channel WAD.
+2. Drop `mii_channel_auto.apworld` into Archipelago's `custom_worlds` folder
    and restart the Launcher.
-2. Copy `gecko/HACA01.ini` from this repository into your Dolphin user
-   folder's `GameSettings\` directory.
-3. In Dolphin: *Config > General > Enable Cheats*. Then right-click the Mii
-   Channel > Properties > Gecko Codes and check that all eleven codes of the
-   file are ticked. Gecko codes load when the game boots, so restart the
-   channel after changing them.
-4. Fill in `docs/Mii Channel Auto.yaml` (every option is explained in it) and
+3. Fill in `docs/Mii Channel Auto.yaml` (every option is explained in it) and
    include it in your multiworld.
+
+That's all: the Gecko codes and the "Enable Cheats" setting are put in the
+client's own Dolphin folder automatically.
 
 ## Joining a MultiWorld Game
 
 1. From the Launcher, start "Mii Channel Client" and connect.
-2. The client finds `RFL_DB.dat` in the Dolphin user folder (use
-   `/miipath C:\full\path\to\RFL_DB.dat` if it can't).
+2. The first time, it asks where `Dolphin.exe` is, then creates its Dolphin
+   folder (a few seconds).
 3. It writes the targets into the **Mii Parade**, then starts Dolphin on the
    Mii Channel by itself. Leave the client running while you play.
+
+Settings live in Archipelago's `host.yaml`, under `mii_channel_auto_options`:
+`dolphin_path` (Dolphin.exe), `profile_folder` (empty: the client's own
+folder; name a folder only if you accept losing its Mii save) and
+`source_user_folder` (where to copy the Mii Channel from; empty: found
+automatically, including portable Dolphins).
 
 ## How to play
 
@@ -127,7 +141,6 @@ saving; outside the editor it does nothing.
 
 - `/targets` lists the targets and your progress; `/targets 3` prints target
   3's exact values.
-- `/miipath <path>` sets the save file manually.
 
 ## Troubleshooting
 
@@ -141,6 +154,9 @@ saving; outside the editor it does nothing.
   the new Dolphin by itself within a few seconds; if not, restart the client.
 - **Head zoom, name position or padlocks look like the original game**: those
   values are written by the client -- make sure it is connected.
-- **Back up `RFL_DB.dat`** before a long session. The client edits it (target
-  Miis in the Parade, reverting locked features, traps) with correct
-  checksums, but a backup costs nothing.
+- **"The Mii Channel is not installed in your Dolphin"**: install it (see
+  Installation), or set `source_user_folder` in host.yaml to the Dolphin user
+  folder that has it.
+- **Back up the client's `RFL_DB.dat`** before a long session. The client
+  edits it (target Miis in the Parade, reverting locked features, traps) with
+  correct checksums, but a backup costs nothing.

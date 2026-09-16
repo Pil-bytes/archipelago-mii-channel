@@ -1,4 +1,6 @@
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
+
+import settings
 
 import worlds.LauncherComponents as LauncherComponents
 from BaseClasses import ItemClassification, Region, Tutorial
@@ -39,6 +41,27 @@ LauncherComponents.components.append(
 )
 
 
+class MiiChannelSettings(settings.Group):
+    class DolphinPath(settings.UserFilePath):
+        """Dolphin.exe (the client asks for it the first time)."""
+        is_exe = True
+        description = "Dolphin Emulator executable (Dolphin.exe)"
+
+    class ProfileFolder(str):
+        """Dolphin user folder Mii Channel Auto plays in. Empty: a folder of its
+        own inside Archipelago, created on first launch with the Mii Channel
+        copied from your Dolphin -- your own Miis are never touched. Only name a
+        folder here that you are ready to lose the Mii save of."""
+
+    class SourceUserFolder(str):
+        """Your regular Dolphin user folder, to copy the Mii Channel from when
+        creating the profile. Empty: found automatically."""
+
+    dolphin_path: DolphinPath = DolphinPath("Dolphin.exe")
+    profile_folder: ProfileFolder = ProfileFolder("")
+    source_user_folder: SourceUserFolder = SourceUserFolder("")
+
+
 class MiiChannelWebWorld(WebWorld):
     theme: str = "grass"
 
@@ -62,6 +85,8 @@ class MiiChannelWorld(World):
     """
 
     game = "Mii Channel Auto"
+    settings: ClassVar[MiiChannelSettings]
+    settings_key = "mii_channel_auto_options"
     options_dataclass = MiiChannelOptions
     options: MiiChannelOptions
 

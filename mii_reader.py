@@ -367,52 +367,6 @@ def read_miis(path: str) -> List[Mii]:
     return miis
 
 
-def find_rfl_db() -> Optional[str]:
-    """Best-effort auto-detection of RFL_DB.dat across common Dolphin/Wii setups.
-
-    Checks a dedicated Archipelago-only Dolphin user profile first (if one
-    exists) before falling back to the player's regular/default Dolphin
-    profile -- so the client never touches a real personal Mii collection by
-    accident. See docs/setup_en.md for why this profile is recommended.
-    """
-    candidates: List[str] = []
-
-    userprofile = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    dedicated_menu_dir = os.path.join(
-        userprofile, "Documents", "Perso", "Emulateur", "Dolphin_Archipelago_User",
-        "Wii", "shared2", "menu", "FaceLib",
-    )
-    dedicated_path = os.path.join(dedicated_menu_dir, "RFL_DB.dat")
-
-    # If a dedicated Archipelago-only profile has been set up at all (its
-    # folder exists), always use it -- even before Mii Channel has created
-    # RFL_DB.dat in it yet (read_miis handles a missing file gracefully).
-    # Never fall through to the player's real Dolphin profile in that case:
-    # doing so even once would mean editing their real Mii collection.
-    if os.path.isdir(dedicated_menu_dir):
-        return dedicated_path
-
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        candidates.append(os.path.join(appdata, "Dolphin Emulator", "Wii", "shared2", "menu", "FaceLib", "RFL_DB.dat"))
-
-    candidates.append(os.path.join(userprofile, "Documents", "Dolphin Emulator", "Wii", "shared2", "menu", "FaceLib", "RFL_DB.dat"))
-
-    xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
-    candidates.append(os.path.join(xdg_data, "dolphin-emu", "Wii", "shared2", "menu", "FaceLib", "RFL_DB.dat"))
-    candidates.append(os.path.join(os.path.expanduser("~"), ".dolphin-emu", "Wii", "shared2", "menu", "FaceLib", "RFL_DB.dat"))
-    candidates.append(os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Dolphin", "Wii", "shared2", "menu", "FaceLib", "RFL_DB.dat"))
-
-    # Portable installs: a "Dolphin*" folder anywhere alongside the client, or on any drive root.
-    for pattern in ("Dolphin*/User/Wii/shared2/menu/FaceLib/RFL_DB.dat", "*/Wii/shared2/menu/FaceLib/RFL_DB.dat"):
-        candidates.extend(glob.glob(pattern))
-
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return candidate
-    return None
-
-
 _FIELD_WORD_BITS: Dict[int, int] = {}
 for _fname, (_woff, _wbits, _start, _width) in FIELD_SPECS.items():
     _FIELD_WORD_BITS[_woff] = _wbits
@@ -557,45 +511,6 @@ _TEMPLATE_ENTRY_B64 = (
     "AAIAVAAxACAANgAvADIANQAAAAAAAEBAibi7CcLG5qsABEJBMb0oogiMCEgUSbiNAIoAiiUFAAAA"
     "AAAAAAAAAAAAAAAAAAAAAAA="
 )
-
-
-def dolphin_profile_dir(rfl_db_path: str) -> str:
-    """The Dolphin user directory an RFL_DB.dat belongs to, i.e. what to
-    pass to Dolphin's -u: <profile>/Wii/shared2/menu/FaceLib/RFL_DB.dat."""
-    return os.path.abspath(os.path.join(os.path.dirname(rfl_db_path), "..", "..", "..", ".."))
-
-
-def find_dolphin_exe(profile_dir: str) -> Optional[str]:
-    """Locate the Dolphin executable that goes with a given user profile.
-
-    Looks beside the profile first (the usual layout here is a
-    Dolphin-x64/ folder next to Dolphin_Archipelago_User/), then in the
-    profile's own launcher script if one was left there, then the usual
-    install locations."""
-    parent = os.path.dirname(profile_dir)
-    candidates = [
-        os.path.join(parent, "Dolphin-x64", "Dolphin.exe"),
-        os.path.join(parent, "Dolphin", "Dolphin.exe"),
-    ]
-    candidates.extend(glob.glob(os.path.join(parent, "Dolphin*", "Dolphin.exe")))
-
-    for bat in glob.glob(os.path.join(profile_dir, "*.bat")):
-        try:
-            with open(bat, "r", encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    for token in line.split('"'):
-                        if token.lower().endswith("dolphin.exe"):
-                            candidates.append(token)
-        except OSError:
-            pass
-
-    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-    candidates.append(os.path.join(program_files, "Dolphin", "Dolphin.exe"))
-
-    for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return os.path.abspath(candidate)
-    return None
 
 
 def _slot_bit(slot: int) -> Tuple[int, int]:
