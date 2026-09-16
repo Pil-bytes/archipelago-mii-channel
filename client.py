@@ -955,11 +955,19 @@ class MiiChannelContext(CommonClient.CommonContext):
                    f"{WC24_COLOUR_LEGEND}")
         separator: Row = (WC24_SEPARATOR, WC24_COLOR_SEPARATOR, "", "", None)
         rows: List[Row] = [(header, WC24_COLOR_HEADER, summary, "OK", None)]
-        # Doable checks first, then the hinted ones, then what is still
-        # locked (user request 2026-09-15); category order within each group.
-        order = {COL_IN_LOGIC: 0, COL_HINTED: 1, COL_WE_HINTED: 2, COL_LOCKED: 3}
-        todo_rows = [todo_row(c) for c in todo]
-        todo_rows.sort(key=lambda row: order.get(row[1], 4))
+        # Doable AND hinted first (user 2026-09-16), then doable, then hinted
+        # but locked, then locked with every unlock located, then locked
+        # (user 2026-09-15); category order within each group.
+        def rank(category: str) -> int:
+            doable = not needs(category)
+            hinted = location_hint(category) is not None
+            if doable:
+                return 0 if hinted else 1
+            if hinted:
+                return 2
+            return 3 if todo_row(category)[1] == COL_WE_HINTED else 4
+
+        todo_rows = [todo_row(c) for c in sorted(todo, key=rank)]
         rows += todo_rows
         if sent:
             rows += [separator] + [(c, COL_SENT, sent_message(c, True), "OK", None) for c in sent]
