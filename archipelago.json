@@ -2,7 +2,7 @@
     "compatible_version": 7,
     "version": 1,
     "game": "Mii Channel Auto",
-    "world_version": "1.0.1",
+    "world_version": "1.0.2",
     "minimum_ap_version": "0.6.7",
     "authors": [
         "Pil_Bandit"

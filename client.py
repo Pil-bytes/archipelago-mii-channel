@@ -376,7 +376,7 @@ FEATURE_DEFAULTS: Dict[str, bool] = {
     # them into the Mii Parade and delete the Plaza previews, so the Plaza
     # holds only the player's own Miis. Parade layout decoded from the
     # game's code and verified live 2026-09-11 (see mii_reader).
-    "targets_in_parade": False,
+    "targets_in_parade": True,
 }
 FEATURE_HELP: Dict[str, str] = {
     "restore_values": "V9/V10 only. Writes at 0x803C1500 -- keep OFF with V11+.",
@@ -1465,6 +1465,14 @@ class MiiChannelContext(CommonClient.CommonContext):
                 all_miis: List[Mii] = read_miis(self.mii_db_path)
             except OSError as e:
                 CommonClient.logger.debug(f"Could not read {self.mii_db_path}: {e!r}")
+                # A new game starts without RFL_AP.dat: only the running game
+                # creates it, so Dolphin must still be started here (user
+                # 2026-09-17: a first connection left the client waiting for a
+                # save that nothing would ever write).
+                if (not self.dolphin_launched and isinstance(e, FileNotFoundError)
+                        and self.features["autolaunch"]):
+                    self.dolphin_launched = True
+                    self._launch_dolphin()
                 return
             self._apply_traps(all_miis)
 

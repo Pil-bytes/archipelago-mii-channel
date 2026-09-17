@@ -1,4 +1,4 @@
-# Mii Channel Auto Setup Guide (v1.0.1)
+# Mii Channel Auto Setup Guide (v1.0.2)
 
 ## What this is
 
@@ -158,6 +158,11 @@ saving; outside the editor it does nothing.
   the Gecko codes aren't loaded, or the client isn't running. Check the
   codes are enabled and restart the channel. If you add codes of your own,
   keep the total small: Dolphin silently drops Gecko codes past ~3 KB.
+- **No grey veils or padlocks in the editor, but items are still locked**:
+  the MMU must be on for this channel. The client switches it on for you
+  (Properties of the game, or `GameSettings/HAPX01.ini`, `[Core] MMU = True`);
+  if you removed that line, put it back, or tick Config > Advanced > Enable
+  MMU, and restart the channel.
 - **Locks don't react after restarting Dolphin**: the client reconnects to
   the new Dolphin by itself within a few seconds; if not, restart the client.
 - **Head zoom, name position or padlocks look like the original game**: those
